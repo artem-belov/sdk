@@ -304,8 +304,11 @@ func (b *Builder) newRegistry(ctx context.Context, proxyRegistryURL *url.URL) *R
 }
 
 func supplyDummyForwarder(ctx context.Context, name string, generateToken token.GeneratorFunc, connectTo *url.URL, dialOptions ...grpc.DialOption) endpoint.Endpoint {
-	var result endpoint.Endpoint
-	result = endpoint.NewServer(ctx,
+	type forwarderServer struct {
+		endpoint.Endpoint
+	}
+	rv := &forwarderServer{}
+	rv.Endpoint = endpoint.NewServer(ctx,
 		name,
 		authorize.NewServer(),
 		generateToken,
@@ -315,10 +318,10 @@ func supplyDummyForwarder(ctx context.Context, name string, generateToken token.
 			client.NewCrossConnectClientFactory(
 				name,
 				// What to call onHeal
-				addressof.NetworkServiceClient(adapters.NewServerToClient(result)),
+				addressof.NetworkServiceClient(adapters.NewServerToClient(rv)),
 				generateToken),
 			dialOptions...,
 		),
 	)
-	return result
+	return rv
 }

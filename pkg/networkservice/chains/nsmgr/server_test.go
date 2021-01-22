@@ -20,6 +20,7 @@ package nsmgr_test
 import (
 	"context"
 	"fmt"
+	"github.com/golang/protobuf/ptypes"
 	"io/ioutil"
 	"strconv"
 	"sync"
@@ -397,6 +398,70 @@ func TestNSMGR_PassThroughRemote(t *testing.T) {
 	// Path length to first endpoint is 5
 	// Path length from NSE client to other remote endpoint is 8
 	require.Equal(t, 8*(nodesCount-1)+5, len(conn.Path.PathSegments))
+}
+
+func TestNSMGR_Heal(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	logrus.SetOutput(ioutil.Discard)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
+	defer cancel()
+	domain := sandbox.NewBuilder(t).
+		SetNodesCount(2).
+		SetRegistryProxySupplier(nil).
+		SetContext(ctx).
+		Build()
+	defer domain.Cleanup()
+
+	expireTime, err := ptypes.TimestampProto(time.Now().Add(time.Second))
+	require.NoError(t, err)
+
+	nseReg := &registry.NetworkServiceEndpoint{
+		Name:                "final-endpoint",
+		NetworkServiceNames: []string{"my-service-remote"},
+		ExpirationTime:      expireTime,
+	}
+
+	counter := &counterServer{}
+	nseCtx, nseCtxCancel := context.WithTimeout(context.Background(), time.Second*1)
+	defer nseCtxCancel()
+	_, err = sandbox.NewEndpoint(nseCtx, nseReg, sandbox.GenerateTestToken, domain.Nodes[0].NSMgr, counter)
+	require.NoError(t, err)
+
+	request := &networkservice.NetworkServiceRequest{
+		MechanismPreferences: []*networkservice.Mechanism{
+			{Cls: cls.LOCAL, Type: kernelmech.MECHANISM},
+		},
+		Connection: &networkservice.Connection{
+			Id:             "1",
+			NetworkService: "my-service-remote",
+			Context:        &networkservice.ConnectionContext{},
+		},
+	}
+
+	nsc := sandbox.NewClient(ctx, sandbox.GenerateTestToken, domain.Nodes[1].NSMgr.URL)
+
+	conn, err := nsc.Request(ctx, request.Clone())
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	require.Equal(t, int32(1), atomic.LoadInt32(&counter.Requests))
+	require.Equal(t, 8, len(conn.Path.PathSegments))
+
+	nseReg2 := &registry.NetworkServiceEndpoint{
+		Name:                "final-endpoint2",
+		NetworkServiceNames: []string{"my-service-remote"},
+	}
+	_, err = sandbox.NewEndpoint(ctx, nseReg2, sandbox.GenerateTestToken, domain.Nodes[0].NSMgr, counter)
+	require.NoError(t, err)
+
+	// Wait NSE expired and reconnecting to the new NSE
+	<-time.After(5 * time.Second)
+
+	// Close.
+	e, err := nsc.Close(ctx, conn)
+	require.NoError(t, err)
+	require.NotNil(t, e)
+	require.Equal(t, int32(2), atomic.LoadInt32(&counter.Requests))
+	require.Equal(t, int32(1), atomic.LoadInt32(&counter.Closes))
 }
 
 func TestNSMGR_PassThroughLocal(t *testing.T) {
