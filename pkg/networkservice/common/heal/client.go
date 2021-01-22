@@ -156,10 +156,8 @@ func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservi
 
 	// Start looping over events
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		default:
 		}
 		event, err := recv.Recv()
 		if err != nil {
@@ -167,22 +165,25 @@ func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservi
 			if newRecvErr == nil {
 				recv = newRecv
 			} else {
-				ctx, requestCancel := context.WithTimeout(f.ctx, 60*time.Second)
+				if ctx.Err() != nil {
+					return
+				}
+
+				ctx, requestCancel := context.WithTimeout(f.ctx, 1*time.Second)
 				defer requestCancel()
 
-				_, err := (*f.onHeal).Request(ctx, request, opts...)
+				_, err := (*f.onHeal).Request(ctx, request.Clone(), opts...)
 				if err != nil {
 					f.processHeal(baseCtx, request.Clone(), opts...)
 				}
+
 				return
 			}
 			runtime.Gosched()
 			continue
 		}
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		default:
 		}
 		if err := f.processEvent(baseCtx, request, event, opts...); err != nil {
 			if err != nil {
@@ -199,6 +200,8 @@ func (f *healClient) initialMonitorSegment(ctx context.Context, conn *networkser
 	var recv networkservice.MonitorConnection_MonitorConnectionsClient
 	pathSegment := conn.GetNextPathSegment()
 
+	initialCtx, cancel := context.WithCancel(ctx)
+
 	go func() {
 		// If pathSegment is nil, the server is very very screwed up
 		if pathSegment == nil {
@@ -208,7 +211,7 @@ func (f *healClient) initialMonitorSegment(ctx context.Context, conn *networkser
 
 		// Monitor *just* this connection
 		var err error
-		recv, err = f.client.MonitorConnections(ctx, &networkservice.MonitorScopeSelector{
+		recv, err = f.client.MonitorConnections(initialCtx, &networkservice.MonitorScopeSelector{
 			PathSegments: []*networkservice.PathSegment{
 				pathSegment,
 			},
@@ -241,9 +244,7 @@ func (f *healClient) initialMonitorSegment(ctx context.Context, conn *networkser
 	case err := <-errCh:
 		return recv, err
 	case <-time.After(1 * time.Second):
-		if cancel, ok := f.cancelHealMap[conn.GetId()]; ok {
-			cancel()
-		}
+		cancel()
 		err := <-errCh
 		return recv, err
 	}
@@ -284,6 +285,8 @@ func (f *healClient) processHeal(baseCtx context.Context, request *networkservic
 	var err error
 	candidates := discover.Candidates(baseCtx)
 	if candidates != nil {
+		trace.Log(baseCtx).Errorf("Starting heal process for %s", request.GetConnection().GetId())
+
 		healCtx, healCancel := context.WithTimeout(f.ctx, 60*time.Second)
 		defer healCancel()
 
