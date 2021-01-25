@@ -34,15 +34,20 @@ import (
 
 	"github.com/networkservicemesh/sdk/pkg/networkservice/common/discover"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/core/next"
-	"github.com/networkservicemesh/sdk/pkg/networkservice/core/trace"
 	"github.com/networkservicemesh/sdk/pkg/tools/addressof"
+	"github.com/networkservicemesh/sdk/pkg/tools/logger"
 )
+
+type ctxWrapper struct {
+	ctx    context.Context
+	cancel func()
+}
 
 type healClient struct {
 	ctx                   context.Context
 	client                networkservice.MonitorConnectionClient
 	onHeal                *networkservice.NetworkServiceClient
-	cancelHealMap         map[string]func()
+	cancelHealMap         map[string]*ctxWrapper
 	cancelHealMapExecutor serialize.Executor
 }
 
@@ -64,7 +69,7 @@ func NewClient(ctx context.Context, client networkservice.MonitorConnectionClien
 		ctx:           ctx,
 		client:        client,
 		onHeal:        onHeal,
-		cancelHealMap: make(map[string]func()),
+		cancelHealMap: make(map[string]*ctxWrapper),
 	}
 
 	if rv.onHeal == nil {
@@ -98,7 +103,8 @@ func (f *healClient) Close(ctx context.Context, conn *networkservice.Connection,
 func (f *healClient) stopHeal(conn *networkservice.Connection) {
 	var cancelHeal func()
 	<-f.cancelHealMapExecutor.AsyncExec(func() {
-		cancelHeal = f.cancelHealMap[conn.GetId()]
+		cancelHeal = f.cancelHealMap[conn.GetId()].cancel
+		delete(f.cancelHealMap, conn.GetId())
 	})
 	cancelHeal()
 }
@@ -134,18 +140,19 @@ func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservi
 	ctx, cancel := context.WithDeadline(f.ctx, expireTime)
 	defer cancel()
 	id := request.GetConnection().GetId()
-	f.cancelHealMapExecutor.AsyncExec(func() {
-		if cancel, ok := f.cancelHealMap[id]; ok {
-			go cancel() // TODO - what to do with the errCh here?
+	<-f.cancelHealMapExecutor.AsyncExec(func() {
+		if entry, ok := f.cancelHealMap[id]; ok {
+			go entry.cancel() // TODO - what to do with the errCh here?
 		}
-		f.cancelHealMap[id] = func() {
-			cancel()
+		f.cancelHealMap[id] = &ctxWrapper{
+			ctx:    ctx,
+			cancel: cancel,
 		}
 	})
 
 	// Monitor the pathSegment for the first time, so we can pass back an error
 	// if we can't confirm via monitor the other side has the expected state
-	recv, err := f.initialMonitorSegment(ctx, request.GetConnection())
+	recv, err := f.initialMonitorSegment(ctx, request.GetConnection(), time.Until(expireTime))
 	if err != nil {
 		errCh <- errors.Wrapf(err, "error calling MonitorConnection_MonitorConnectionsClient.Recv to get initial confirmation server has connection: %+v", request.GetConnection())
 		return
@@ -161,15 +168,29 @@ func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservi
 		}
 		event, err := recv.Recv()
 		if err != nil {
-			newRecv, newRecvErr := f.initialMonitorSegment(ctx, request.GetConnection())
+			timeout := time.Minute
+			if time.Now().Add(time.Minute).After(expireTime) {
+				timeout = time.Until(expireTime)
+			}
+			newRecv, newRecvErr := f.initialMonitorSegment(ctx, request.GetConnection(), timeout)
 			if newRecvErr == nil {
 				recv = newRecv
 			} else {
-				if ctx.Err() != nil {
+				var healMapCtx context.Context
+				<-f.cancelHealMapExecutor.AsyncExec(func() {
+					if entry, ok := f.cancelHealMap[id]; ok {
+						healMapCtx = entry.ctx
+					}
+				})
+				if ctx.Err() != nil && healMapCtx != ctx {
 					return
 				}
 
-				ctx, requestCancel := context.WithTimeout(f.ctx, 1*time.Second)
+				timeout := time.Minute
+				if time.Now().Add(time.Minute).After(expireTime) {
+					timeout = time.Until(expireTime)
+				}
+				ctx, requestCancel := context.WithTimeout(f.ctx, timeout)
 				defer requestCancel()
 
 				_, err := (*f.onHeal).Request(ctx, request.Clone(), opts...)
@@ -195,7 +216,7 @@ func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservi
 
 // initialMonitorSegment - monitors for pathSegment and returns a recv and an error if the server does not have
 // a record for the connection matching our expectations
-func (f *healClient) initialMonitorSegment(ctx context.Context, conn *networkservice.Connection) (networkservice.MonitorConnection_MonitorConnectionsClient, error) {
+func (f *healClient) initialMonitorSegment(ctx context.Context, conn *networkservice.Connection, timeout time.Duration) (networkservice.MonitorConnection_MonitorConnectionsClient, error) {
 	errCh := make(chan error, 1)
 	var recv networkservice.MonitorConnection_MonitorConnectionsClient
 	pathSegment := conn.GetNextPathSegment()
@@ -243,7 +264,7 @@ func (f *healClient) initialMonitorSegment(ctx context.Context, conn *networkser
 	select {
 	case err := <-errCh:
 		return recv, err
-	case <-time.After(1 * time.Second):
+	case <-time.After(timeout):
 		cancel()
 		err := <-errCh
 		return recv, err
@@ -282,10 +303,12 @@ func (f *healClient) processEvent(baseCtx context.Context, request *networkservi
 }
 
 func (f *healClient) processHeal(baseCtx context.Context, request *networkservice.NetworkServiceRequest, opts ...grpc.CallOption) error {
+	logEntry := logger.Log(baseCtx).WithField("healClient", "processHeal")
+
 	var err error
 	candidates := discover.Candidates(baseCtx)
 	if candidates != nil {
-		trace.Log(baseCtx).Errorf("Starting heal process for %s", request.GetConnection().GetId())
+		logEntry.Infof("Starting heal process for %s", request.GetConnection().GetId())
 
 		healCtx, healCancel := context.WithTimeout(f.ctx, 60*time.Second)
 		defer healCancel()
@@ -295,17 +318,20 @@ func (f *healClient) processHeal(baseCtx context.Context, request *networkservic
 
 		_, err = (*f.onHeal).Request(healCtx, reRequest, opts...)
 		if err != nil {
-			trace.Log(baseCtx).Errorf("Failed to heal connection %s: %v", request.GetConnection().GetId(), err)
+			logEntry.Errorf("Failed to heal connection %s: %v", request.GetConnection().GetId(), err)
+		} else {
+			logEntry.Infof("Finished heal process for %s", request.GetConnection().GetId())
 		}
 	}
 
 	if candidates == nil || err != nil {
+		// Huge timeout is not required to close connection on current path segment
 		closeCtx, closeCancel := context.WithTimeout(f.ctx, 1*time.Second)
 		defer closeCancel()
 
 		_, err := (*f.onHeal).Close(closeCtx, request.GetConnection().Clone(), opts...)
 		if err != nil {
-			trace.Log(baseCtx).Errorf("Failed to close connection %s: %v", request.GetConnection().GetId(), err)
+			logEntry.Errorf("Failed to close connection %s: %v", request.GetConnection().GetId(), err)
 		}
 	}
 

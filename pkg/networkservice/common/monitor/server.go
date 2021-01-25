@@ -1,5 +1,7 @@
 // Copyright (c) 2020 Cisco Systems, Inc.
 //
+// Copyright (c) 2021 Doc.ai and/or its affiliates.
+//
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,14 +23,15 @@ package monitor
 import (
 	"context"
 
+	"github.com/networkservicemesh/sdk/pkg/tools/logger"
+
 	"github.com/golang/protobuf/ptypes/empty"
 
 	"github.com/edwarnicke/serialize"
 
-	"github.com/networkservicemesh/sdk/pkg/networkservice/core/next"
-	"github.com/networkservicemesh/sdk/pkg/networkservice/core/trace"
-
 	"github.com/networkservicemesh/api/pkg/api/networkservice"
+
+	"github.com/networkservicemesh/sdk/pkg/networkservice/core/next"
 )
 
 type connection struct {
@@ -96,7 +99,7 @@ func (m *monitorServer) Request(ctx context.Context, request *networkservice.Net
 				Connections: map[string]*networkservice.Connection{eventConn.GetId(): eventConn},
 			}
 			if sendErr := m.send(ctx, event); sendErr != nil {
-				trace.Log(ctx).Errorf("Error during sending event: %v", sendErr)
+				logger.Log(ctx).Errorf("Error during sending event: %v", sendErr)
 			}
 		})
 	}
@@ -121,7 +124,7 @@ func (m *monitorServer) Close(ctx context.Context, conn *networkservice.Connecti
 			Connections: map[string]*networkservice.Connection{eventConn.GetId(): eventConn.Connection},
 		}
 		if err := m.send(ctx, event); err != nil {
-			trace.Log(ctx).Errorf("Error during sending event: %v", err)
+			logger.Log(ctx).Errorf("Error during sending event: %v", err)
 		}
 	})
 	return &empty.Empty{}, closeErr
@@ -135,7 +138,7 @@ func (m *monitorServer) send(ctx context.Context, event *networkservice.Connecti
 		case <-filter.Context().Done():
 		default:
 			if err = filter.Send(event.Clone()); err != nil {
-				trace.Log(ctx).Errorf("Error sending event: %+v: %+v", event, err)
+				logger.Log(ctx).Errorf("Error sending event: %+v: %+v", event, err)
 			}
 			newMonitors = append(newMonitors, filter)
 		}
