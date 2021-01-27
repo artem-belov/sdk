@@ -21,6 +21,7 @@ package interpose
 import (
 	"context"
 	"net/url"
+	"time"
 
 	"github.com/networkservicemesh/sdk/pkg/tools/logger"
 
@@ -93,6 +94,7 @@ func (l *interposeServer) Request(ctx context.Context, request *networkservice.N
 		// Iterate over all cross connect NSEs to check one with passed state.
 		l.endpoints.Range(func(key string, crossNSEURL *url.URL) bool {
 			crossCTX := clienturlctx.WithClientURL(ctx, crossNSEURL)
+			crossCTX, _ = context.WithTimeout(crossCTX, time.Second)
 
 			// Store client connection and selected cross connection URL.
 			connInfo, _ = l.activeConnection.LoadOrStore(activeConnID, connectionInfo{

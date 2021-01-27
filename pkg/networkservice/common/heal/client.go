@@ -103,10 +103,14 @@ func (f *healClient) Close(ctx context.Context, conn *networkservice.Connection,
 func (f *healClient) stopHeal(conn *networkservice.Connection) {
 	var cancelHeal func()
 	<-f.cancelHealMapExecutor.AsyncExec(func() {
-		cancelHeal = f.cancelHealMap[conn.GetId()].cancel
-		delete(f.cancelHealMap, conn.GetId())
+		if cancelHealEntry, ok := f.cancelHealMap[conn.GetId()]; ok {
+			cancelHeal = cancelHealEntry.cancel
+			delete(f.cancelHealMap, conn.GetId())
+		}
 	})
-	cancelHeal()
+	if cancelHeal != nil {
+		cancelHeal()
+	}
 }
 
 // startHeal - start a healAsNeeded using the request as the request for re-request if healing is needed.
@@ -182,7 +186,7 @@ func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservi
 						healMapCtx = entry.ctx
 					}
 				})
-				if ctx.Err() != nil && healMapCtx != ctx {
+				if healMapCtx != ctx || f.ctx.Err() != nil {
 					return
 				}
 
@@ -203,7 +207,7 @@ func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservi
 			runtime.Gosched()
 			continue
 		}
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || f.ctx.Err() != nil {
 			return
 		}
 		if err := f.processEvent(baseCtx, request, event, opts...); err != nil {
@@ -310,11 +314,13 @@ func (f *healClient) processHeal(baseCtx context.Context, request *networkservic
 	if candidates != nil {
 		logEntry.Infof("Starting heal process for %s", request.GetConnection().GetId())
 
-		healCtx, healCancel := context.WithTimeout(f.ctx, 60*time.Second)
+		healCtx, healCancel := context.WithCancel(f.ctx)
 		defer healCancel()
 
 		reRequest := request.Clone()
 		reRequest.GetConnection().NetworkServiceEndpointName = ""
+		path := reRequest.GetConnection().Path
+		reRequest.GetConnection().Path.PathSegments = path.PathSegments[0 : path.Index+1]
 
 		_, err = (*f.onHeal).Request(healCtx, reRequest, opts...)
 		if err != nil {
@@ -325,7 +331,7 @@ func (f *healClient) processHeal(baseCtx context.Context, request *networkservic
 	}
 
 	if candidates == nil || err != nil {
-		// Huge timeout is not required to close connection on current path segment
+		// Huge timeout is not required to close connection on a current path segment
 		closeCtx, closeCancel := context.WithTimeout(f.ctx, 1*time.Second)
 		defer closeCancel()
 

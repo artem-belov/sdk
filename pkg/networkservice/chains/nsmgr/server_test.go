@@ -395,7 +395,7 @@ func TestNSMGR_PassThroughRemote(t *testing.T) {
 	require.Equal(t, 8*(nodesCount-1)+5, len(conn.Path.PathSegments))
 }
 
-func TestNSMGR_Heal(t *testing.T) {
+func TestNSMGR_HealEndpoint(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
 
@@ -438,7 +438,7 @@ func TestNSMGR_Heal(t *testing.T) {
 	conn, err := nsc.Request(ctx, request.Clone())
 	require.NoError(t, err)
 	require.NotNil(t, conn)
-	require.Equal(t, int32(1), atomic.LoadInt32(&counter.Requests))
+	require.Equal(t, 1, counter.UniqueRequests())
 	require.Equal(t, 8, len(conn.Path.PathSegments))
 
 	nseReg2 := &registry.NetworkServiceEndpoint{
@@ -455,8 +455,73 @@ func TestNSMGR_Heal(t *testing.T) {
 	e, err := nsc.Close(ctx, conn)
 	require.NoError(t, err)
 	require.NotNil(t, e)
-	require.Equal(t, int32(2), atomic.LoadInt32(&counter.Requests))
-	require.Equal(t, int32(1), atomic.LoadInt32(&counter.Closes))
+	require.Equal(t, 2, counter.UniqueRequests())
+	require.Equal(t, 1, counter.UniqueCloses())
+}
+
+func TestNSMGR_HealRemoteForwarder(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
+	defer cancel()
+
+	forwarderCtx, forwarderCtxCancel := context.WithTimeout(context.Background(), time.Second)
+	defer forwarderCtxCancel()
+
+	customConfig := []*sandbox.NodeConfig{
+		&sandbox.NodeConfig{
+			ForwarderCtx:               forwarderCtx,
+			ForwarderGenerateTokenFunc: sandbox.GenerateExpiringToken(time.Second),
+		},
+	}
+	builder := sandbox.NewBuilder(t)
+	domain := builder.
+		SetNodesCount(2).
+		SetRegistryProxySupplier(nil).
+		SetContext(ctx).
+		SetCustomConfig(customConfig).
+		Build()
+	defer domain.Cleanup()
+
+	nseReg := &registry.NetworkServiceEndpoint{
+		Name:                "final-endpoint",
+		NetworkServiceNames: []string{"my-service-remote"},
+	}
+
+	counter := &counterServer{}
+	_, err := sandbox.NewEndpoint(ctx, nseReg, sandbox.GenerateTestToken, domain.Nodes[0].NSMgr, counter)
+	require.NoError(t, err)
+
+	request := &networkservice.NetworkServiceRequest{
+		MechanismPreferences: []*networkservice.Mechanism{
+			{Cls: cls.LOCAL, Type: kernelmech.MECHANISM},
+		},
+		Connection: &networkservice.Connection{
+			Id:             "1",
+			NetworkService: "my-service-remote",
+			Context:        &networkservice.ConnectionContext{},
+		},
+	}
+
+	nsc := sandbox.NewClient(ctx, sandbox.GenerateTestToken, domain.Nodes[1].NSMgr.URL)
+
+	conn, err := nsc.Request(ctx, request.Clone())
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	require.Equal(t, 1, counter.UniqueRequests())
+	require.Equal(t, 8, len(conn.Path.PathSegments))
+
+	forwarderName := "cross-nse-restored"
+	builder.NewCrossConnectNSE(ctx, forwarderName, domain.Nodes[0], sandbox.GenerateTestToken)
+
+	// Wait NSE expired and reconnecting to the new NSE
+	<-time.After(5 * time.Second)
+
+	// Close.
+	e, err := nsc.Close(ctx, conn)
+	require.NoError(t, err)
+	require.NotNil(t, e)
+	require.Equal(t, 2, counter.UniqueRequests())
+	require.Equal(t, 2, counter.UniqueCloses())
 }
 
 func TestNSMGR_PassThroughLocal(t *testing.T) {
@@ -546,16 +611,65 @@ func (c *passThroughClient) Close(ctx context.Context, conn *networkservice.Conn
 
 type counterServer struct {
 	Requests, Closes int32
+	requests         map[string]int32
+	closes           map[string]int32
+	mu               sync.Mutex
 }
 
 func (c *counterServer) Request(ctx context.Context, request *networkservice.NetworkServiceRequest) (*networkservice.Connection, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	atomic.AddInt32(&c.Requests, 1)
+	if c.requests == nil {
+		c.requests = make(map[string]int32)
+	}
+	connId := request.GetConnection().GetId()
+	if _, ok := c.requests[connId]; ok {
+		c.requests[connId]++
+	} else {
+		c.requests[connId] = 1
+	}
+
 	return next.Server(ctx).Request(ctx, request)
 }
 
 func (c *counterServer) Close(ctx context.Context, connection *networkservice.Connection) (*empty.Empty, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	atomic.AddInt32(&c.Closes, 1)
+	if c.closes == nil {
+		c.closes = make(map[string]int32)
+	}
+	connId := connection.GetId()
+	if _, ok := c.closes[connId]; ok {
+		c.closes[connId]++
+	} else {
+		c.closes[connId] = 1
+	}
+
 	return next.Server(ctx).Close(ctx, connection)
+}
+
+func (c *counterServer) UniqueRequests() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.requests == nil {
+		return 0
+	}
+	return len(c.requests)
+}
+
+func (c *counterServer) UniqueCloses() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closes == nil {
+		return 0
+	}
+	return len(c.closes)
 }
 
 type restartingEndpoint struct {

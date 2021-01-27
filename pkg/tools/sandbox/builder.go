@@ -46,11 +46,19 @@ import (
 	"github.com/networkservicemesh/sdk/pkg/tools/addressof"
 	"github.com/networkservicemesh/sdk/pkg/tools/grpcutils"
 	"github.com/networkservicemesh/sdk/pkg/tools/logger"
+	"github.com/networkservicemesh/sdk/pkg/tools/logger/logruslogger"
 	"github.com/networkservicemesh/sdk/pkg/tools/opentracing"
 	"github.com/networkservicemesh/sdk/pkg/tools/token"
 )
 
 const defaultContextTimeout = time.Second * 15
+
+type NodeConfig struct {
+	NsmgrCtx                   context.Context
+	NsmgrGenerateTokenFunc     token.GeneratorFunc
+	ForwarderCtx               context.Context
+	ForwarderGenerateTokenFunc token.GeneratorFunc
+}
 
 // Builder implements builder pattern for building NSM Domain
 type Builder struct {
@@ -66,6 +74,7 @@ type Builder struct {
 	supplyRegistryProxy SupplyRegistryProxyFunc
 	generateTokenFunc   token.GeneratorFunc
 	ctx                 context.Context
+	nodesConfig         []*NodeConfig
 }
 
 // NewBuilder creates new SandboxBuilder
@@ -86,13 +95,13 @@ func NewBuilder(t *testing.T) *Builder {
 
 // Build builds Domain and Supplier
 func (b *Builder) Build() *Domain {
-	ctx := b.ctx
-	if ctx == nil {
+	initCtx := b.ctx
+	if initCtx == nil {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), defaultContextTimeout)
+		initCtx, cancel = context.WithTimeout(context.Background(), defaultContextTimeout)
 		b.resources = append(b.resources, cancel)
 	}
-	ctx = logger.WithLog(ctx)
+	ctx := logger.WithLog(initCtx)
 	domain := &Domain{}
 	domain.NSMgrProxy = b.newNSMgrProxy(ctx)
 	if domain.NSMgrProxy == nil {
@@ -106,29 +115,96 @@ func (b *Builder) Build() *Domain {
 		domain.Registry = b.newRegistry(ctx, domain.RegistryProxy.URL)
 	}
 	for i := 0; i < b.nodesCount; i++ {
+		nodeConfig := b.nodesConfig[i]
 		var node = new(Node)
-		node.NSMgr = b.newNSMgr(ctx, domain.Registry.URL)
+
+		// Setup NSMgr
+		nsmgrCtx := nodeConfig.NsmgrCtx
+		if nsmgrCtx != initCtx {
+			var nsmgrCancel context.CancelFunc
+			nsmgrCtx, nsmgrCancel = context.WithCancel(nsmgrCtx)
+			b.resources = append(b.resources, nsmgrCancel)
+			nsmgrCtx = logger.WithLog(nsmgrCtx)
+		} else {
+			nsmgrCtx = ctx
+		}
+		node.NSMgr = b.newNSMgr(nsmgrCtx, domain.Registry.URL, nodeConfig.NsmgrGenerateTokenFunc)
+
+		// Setup Forwarder
+		forwarderCtx := nodeConfig.ForwarderCtx
+		if forwarderCtx != initCtx {
+			var forwarderCancel context.CancelFunc
+			forwarderCtx, forwarderCancel = context.WithCancel(forwarderCtx)
+			b.resources = append(b.resources, forwarderCancel)
+			forwarderCtx, _ = logruslogger.New(forwarderCtx)
+		} else {
+			forwarderCtx = ctx
+		}
 		forwarderName := "cross-nse-" + uuid.New().String()
-		forwarderRegistrationClient := chain.NewNetworkServiceEndpointRegistryClient(
-			interpose_reg.NewNetworkServiceEndpointRegistryClient(),
-			adapter_registry.NetworkServiceEndpointServerToClient(node.NSMgr.NetworkServiceEndpointRegistryServer()),
-		)
-		node.Forwarder = b.newCrossConnectNSE(ctx, forwarderName, node.NSMgr.URL, forwarderRegistrationClient)
+		node.Forwarder = b.NewCrossConnectNSE(forwarderCtx, forwarderName, node, nodeConfig.ForwarderGenerateTokenFunc)
+
 		domain.Nodes = append(domain.Nodes, node)
 	}
 	domain.resources, b.resources = b.resources, nil
 	return domain
 }
 
-// SetContext sets context for all chains
+// SetContext sets default context for all chains
 func (b *Builder) SetContext(ctx context.Context) *Builder {
 	b.ctx = ctx
+	b.SetCustomConfig([]*NodeConfig{})
+	return b
+}
+
+// SetCustomConfig sets custom configuration for nodes
+func (b *Builder) SetCustomConfig(config []*NodeConfig) *Builder {
+	oldConfig := b.nodesConfig
+	b.nodesConfig = nil
+
+	for i := 0; i < b.nodesCount; i++ {
+		nodeConfig := &NodeConfig{}
+		if i < len(config) && config[i] != nil {
+			*nodeConfig = *oldConfig[i]
+		}
+
+		customConfig := &NodeConfig{}
+		if i < len(config) && config[i] != nil {
+			*customConfig = *config[i]
+		}
+
+		if customConfig.NsmgrCtx != nil {
+			nodeConfig.NsmgrCtx = customConfig.NsmgrCtx
+		} else if nodeConfig.NsmgrCtx == nil {
+			nodeConfig.NsmgrCtx = b.ctx
+		}
+
+		if customConfig.NsmgrGenerateTokenFunc != nil {
+			nodeConfig.NsmgrGenerateTokenFunc = customConfig.NsmgrGenerateTokenFunc
+		} else if nodeConfig.NsmgrGenerateTokenFunc == nil {
+			nodeConfig.NsmgrGenerateTokenFunc = b.generateTokenFunc
+		}
+
+		if customConfig.ForwarderCtx != nil {
+			nodeConfig.ForwarderCtx = customConfig.ForwarderCtx
+		} else if nodeConfig.ForwarderCtx == nil {
+			nodeConfig.ForwarderCtx = b.ctx
+		}
+
+		if customConfig.ForwarderGenerateTokenFunc != nil {
+			nodeConfig.ForwarderGenerateTokenFunc = customConfig.ForwarderGenerateTokenFunc
+		} else if nodeConfig.ForwarderGenerateTokenFunc == nil {
+			nodeConfig.ForwarderGenerateTokenFunc = b.generateTokenFunc
+		}
+
+		b.nodesConfig = append(b.nodesConfig, nodeConfig)
+	}
 	return b
 }
 
 // SetNodesCount sets nodes count
 func (b *Builder) SetNodesCount(nodesCount int) *Builder {
 	b.nodesCount = nodesCount
+	b.SetCustomConfig([]*NodeConfig{})
 	return b
 }
 
@@ -207,7 +283,7 @@ func (b *Builder) newNSMgrProxy(ctx context.Context) *EndpointEntry {
 	}
 }
 
-func (b *Builder) newNSMgr(ctx context.Context, registryURL *url.URL) *NSMgrEntry {
+func (b *Builder) newNSMgr(ctx context.Context, registryURL *url.URL, generateTokenFunc token.GeneratorFunc) *NSMgrEntry {
 	if b.supplyNSMgr == nil {
 		panic("nodes without managers are not supported")
 	}
@@ -225,7 +301,7 @@ func (b *Builder) newNSMgr(ctx context.Context, registryURL *url.URL) *NSMgrEntr
 		Url:  serveURL.String(),
 	}
 
-	mgr := b.supplyNSMgr(ctx, nsmgrReg, authorize.NewServer(), b.generateTokenFunc, registryCC, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))
+	mgr := b.supplyNSMgr(ctx, nsmgrReg, authorize.NewServer(), generateTokenFunc, registryCC, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))
 
 	serve(ctx, serveURL, mgr.Register)
 	logger.Log(ctx).Infof("%v listen on: %v", nsmgrReg.Name, serveURL)
@@ -252,7 +328,16 @@ func serve(ctx context.Context, u *url.URL, register func(server *grpc.Server)) 
 	}()
 }
 
-func (b *Builder) newCrossConnectNSE(ctx context.Context, name string, connectTo *url.URL, forwarderRegistrationClient registryapi.NetworkServiceEndpointRegistryClient) *EndpointEntry {
+func (b *Builder) NewCrossConnectNSE(ctx context.Context, name string, node *Node, generateTokenFunc token.GeneratorFunc) *EndpointEntry {
+	registrationClient := chain.NewNetworkServiceEndpointRegistryClient(
+		interpose_reg.NewNetworkServiceEndpointRegistryClient(),
+		adapter_registry.NetworkServiceEndpointServerToClient(node.NSMgr.NetworkServiceEndpointRegistryServer()),
+	)
+
+	return b.newCrossConnectNSE(logger.WithLog(ctx), name, node.NSMgr.URL, registrationClient, generateTokenFunc)
+}
+
+func (b *Builder) newCrossConnectNSE(ctx context.Context, name string, connectTo *url.URL, forwarderRegistrationClient registryapi.NetworkServiceEndpointRegistryClient, generateTokenFunc token.GeneratorFunc) *EndpointEntry {
 	if b.supplyForwarder == nil {
 		panic("nodes without forwarder are not supported")
 	}
@@ -267,7 +352,7 @@ func (b *Builder) newCrossConnectNSE(ctx context.Context, name string, connectTo
 	})
 	b.require.NoError(err)
 
-	crossNSE := b.supplyForwarder(ctx, regForwarder.Name, b.generateTokenFunc, connectTo, grpc.WithInsecure(), grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))
+	crossNSE := b.supplyForwarder(ctx, regForwarder.Name, generateTokenFunc, connectTo, grpc.WithInsecure(), grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))
 	serve(ctx, serveURL, crossNSE.Register)
 	logger.Log(ctx).Infof("%v listen on: %v", name, serveURL)
 	return &EndpointEntry{

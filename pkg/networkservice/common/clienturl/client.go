@@ -52,36 +52,49 @@ func NewClient(ctx context.Context, clientFactory func(ctx context.Context, cc g
 }
 
 func (u *clientURLClient) Request(ctx context.Context, request *networkservice.NetworkServiceRequest, opts ...grpc.CallOption) (*networkservice.Connection, error) {
-	if err := u.init(); err != nil {
+	if err := u.init(ctx); err != nil {
 		return nil, err
 	}
 	return u.client.Request(ctx, request)
 }
 
 func (u *clientURLClient) Close(ctx context.Context, conn *networkservice.Connection, opts ...grpc.CallOption) (*empty.Empty, error) {
-	if err := u.init(); err != nil {
+	if err := u.init(ctx); err != nil {
 		return nil, err
 	}
 	return u.client.Close(ctx, conn)
 }
 
-func (u *clientURLClient) init() error {
+func (u *clientURLClient) init(requestCtx context.Context) error {
 	u.initOnce.Do(func() {
 		clientURL := clienturlctx.ClientURL(u.ctx)
 		if clientURL == nil {
 			u.dialErr = errors.New("cannot dial nil clienturl.ClientURL(ctx)")
 			return
 		}
-		var cc *grpc.ClientConn
-		cc, u.dialErr = grpc.DialContext(u.ctx, grpcutils.URLToTarget(clientURL), u.dialOptions...)
-		if u.dialErr != nil {
-			return
-		}
-		u.client = u.clientFactory(u.ctx, cc)
+
+		ctx, cancel := context.WithCancel(u.ctx)
+		errCh := make(chan error, 1)
 		go func() {
-			<-u.ctx.Done()
-			_ = cc.Close()
+			cc, dialErr := grpc.DialContext(ctx, grpcutils.URLToTarget(clientURL), u.dialOptions...)
+			if dialErr != nil {
+				errCh <- dialErr
+				return
+			}
+			u.client = u.clientFactory(u.ctx, cc)
+			go func() {
+				<-u.ctx.Done()
+				_ = cc.Close()
+			}()
+			errCh <- nil
 		}()
+
+		select {
+		case u.dialErr = <-errCh:
+		case <-requestCtx.Done():
+			cancel()
+			u.dialErr = requestCtx.Err()
+		}
 	})
 	return u.dialErr
 }
