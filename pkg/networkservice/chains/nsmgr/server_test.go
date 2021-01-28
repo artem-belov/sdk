@@ -459,20 +459,40 @@ func TestNSMGR_HealEndpoint(t *testing.T) {
 	require.Equal(t, 1, counter.UniqueCloses())
 }
 
-func TestNSMGR_HealRemoteForwarder(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
-	defer cancel()
-
+func TestNSMGR_HealLocalForwarder(t *testing.T) {
 	forwarderCtx, forwarderCtxCancel := context.WithTimeout(context.Background(), time.Second)
 	defer forwarderCtxCancel()
 
 	customConfig := []*sandbox.NodeConfig{
-		&sandbox.NodeConfig{
+		nil,
+		{
 			ForwarderCtx:               forwarderCtx,
 			ForwarderGenerateTokenFunc: sandbox.GenerateExpiringToken(time.Second),
 		},
 	}
+
+	testNSMGR_HealForwarder(t, 1, customConfig)
+}
+
+func TestNSMGR_HealRemoteForwarder(t *testing.T) {
+	forwarderCtx, forwarderCtxCancel := context.WithTimeout(context.Background(), time.Second)
+	defer forwarderCtxCancel()
+
+	customConfig := []*sandbox.NodeConfig{
+		{
+			ForwarderCtx:               forwarderCtx,
+			ForwarderGenerateTokenFunc: sandbox.GenerateExpiringToken(time.Second),
+		},
+	}
+
+	testNSMGR_HealForwarder(t, 0, customConfig)
+}
+
+func testNSMGR_HealForwarder(t *testing.T, nodeNum int, customConfig []*sandbox.NodeConfig) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
+	defer cancel()
+
 	builder := sandbox.NewBuilder(t)
 	domain := builder.
 		SetNodesCount(2).
@@ -511,9 +531,9 @@ func TestNSMGR_HealRemoteForwarder(t *testing.T) {
 	require.Equal(t, 8, len(conn.Path.PathSegments))
 
 	forwarderName := "cross-nse-restored"
-	builder.NewCrossConnectNSE(ctx, forwarderName, domain.Nodes[0], sandbox.GenerateTestToken)
+	builder.NewCrossConnectNSE(ctx, forwarderName, domain.Nodes[nodeNum], sandbox.GenerateTestToken)
 
-	// Wait NSE expired and reconnecting to the new NSE
+	// Wait Cross NSE expired and reconnecting through the new Cross NSE
 	<-time.After(5 * time.Second)
 
 	// Close.
@@ -630,7 +650,6 @@ func (c *counterServer) Request(ctx context.Context, request *networkservice.Net
 	} else {
 		c.requests[connId] = 1
 	}
-
 	return next.Server(ctx).Request(ctx, request)
 }
 

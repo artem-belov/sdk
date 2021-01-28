@@ -18,20 +18,24 @@ package clienturl
 
 import (
 	"context"
+	"fmt"
 	"sync"
-
-	"github.com/networkservicemesh/sdk/pkg/tools/clienturlctx"
+	"time"
 
 	"github.com/golang/protobuf/ptypes/empty"
-	"github.com/networkservicemesh/api/pkg/api/networkservice"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 
+	"github.com/networkservicemesh/api/pkg/api/networkservice"
+
+	"github.com/networkservicemesh/sdk/pkg/tools/clienturlctx"
 	"github.com/networkservicemesh/sdk/pkg/tools/grpcutils"
 )
 
 type clientURLClient struct {
 	ctx           context.Context
+	cc            *grpc.ClientConn
 	clientFactory func(ctx context.Context, cc grpc.ClientConnInterface) networkservice.NetworkServiceClient
 	dialOptions   []grpc.DialOption
 	initOnce      sync.Once
@@ -75,17 +79,14 @@ func (u *clientURLClient) init(requestCtx context.Context) error {
 
 		ctx, cancel := context.WithCancel(u.ctx)
 		errCh := make(chan error, 1)
+		var cc *grpc.ClientConn
 		go func() {
-			cc, dialErr := grpc.DialContext(ctx, grpcutils.URLToTarget(clientURL), u.dialOptions...)
+			var dialErr error
+			cc, dialErr = grpc.DialContext(ctx, grpcutils.URLToTarget(clientURL), u.dialOptions...)
 			if dialErr != nil {
 				errCh <- dialErr
 				return
 			}
-			u.client = u.clientFactory(u.ctx, cc)
-			go func() {
-				<-u.ctx.Done()
-				_ = cc.Close()
-			}()
 			errCh <- nil
 		}()
 
@@ -93,8 +94,24 @@ func (u *clientURLClient) init(requestCtx context.Context) error {
 		case u.dialErr = <-errCh:
 		case <-requestCtx.Done():
 			cancel()
-			u.dialErr = requestCtx.Err()
+			u.dialErr = <-errCh
+			return
+		case <-time.After(DialTimeout):
+			cancel()
+			u.dialErr = <-errCh
+			return
 		}
+
+		u.cc = cc
+		u.client = u.clientFactory(u.ctx, cc)
+		go func() {
+			<-u.ctx.Done()
+			_ = cc.Close()
+		}()
 	})
+
+	if u.cc.GetState() == connectivity.TransientFailure {
+		return fmt.Errorf("client connection %v has failed", clienturlctx.ClientURL(u.ctx))
+	}
 	return u.dialErr
 }
