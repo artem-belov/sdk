@@ -18,7 +18,6 @@ package clienturl
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -70,6 +69,10 @@ func (u *clientURLClient) Close(ctx context.Context, conn *networkservice.Connec
 }
 
 func (u *clientURLClient) init(requestCtx context.Context) error {
+	if u.cc != nil && u.cc.GetState() == connectivity.TransientFailure {
+		u.initOnce = sync.Once{}
+	}
+
 	u.initOnce.Do(func() {
 		clientURL := clienturlctx.ClientURL(u.ctx)
 		if clientURL == nil {
@@ -110,8 +113,5 @@ func (u *clientURLClient) init(requestCtx context.Context) error {
 		}()
 	})
 
-	if u.cc != nil && u.cc.GetState() == connectivity.TransientFailure {
-		return fmt.Errorf("client connection %v has failed", clienturlctx.ClientURL(u.ctx))
-	}
 	return u.dialErr
 }

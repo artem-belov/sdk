@@ -41,12 +41,12 @@ import (
 	"github.com/networkservicemesh/sdk/pkg/registry/chains/proxydns"
 	"github.com/networkservicemesh/sdk/pkg/registry/common/dnsresolve"
 	interpose_reg "github.com/networkservicemesh/sdk/pkg/registry/common/interpose"
+	"github.com/networkservicemesh/sdk/pkg/registry/common/refresh"
 	adapter_registry "github.com/networkservicemesh/sdk/pkg/registry/core/adapters"
 	"github.com/networkservicemesh/sdk/pkg/registry/core/chain"
 	"github.com/networkservicemesh/sdk/pkg/tools/addressof"
 	"github.com/networkservicemesh/sdk/pkg/tools/grpcutils"
 	"github.com/networkservicemesh/sdk/pkg/tools/logger"
-	"github.com/networkservicemesh/sdk/pkg/tools/logger/logruslogger"
 	"github.com/networkservicemesh/sdk/pkg/tools/opentracing"
 	"github.com/networkservicemesh/sdk/pkg/tools/token"
 )
@@ -128,7 +128,7 @@ func (b *Builder) Build() *Domain {
 		} else {
 			nsmgrCtx = ctx
 		}
-		node.NSMgr = b.newNSMgr(nsmgrCtx, domain.Registry.URL, nodeConfig.NsmgrGenerateTokenFunc)
+		node.NSMgr = b.newNSMgr(nsmgrCtx, "127.0.0.1:0", domain.Registry.URL, nodeConfig.NsmgrGenerateTokenFunc)
 
 		// Setup Forwarder
 		forwarderCtx := nodeConfig.ForwarderCtx
@@ -136,7 +136,7 @@ func (b *Builder) Build() *Domain {
 			var forwarderCancel context.CancelFunc
 			forwarderCtx, forwarderCancel = context.WithCancel(forwarderCtx)
 			b.resources = append(b.resources, forwarderCancel)
-			forwarderCtx, _ = logruslogger.New(forwarderCtx)
+			forwarderCtx = logger.WithLog(nsmgrCtx)
 		} else {
 			forwarderCtx = ctx
 		}
@@ -283,7 +283,11 @@ func (b *Builder) newNSMgrProxy(ctx context.Context) *EndpointEntry {
 	}
 }
 
-func (b *Builder) newNSMgr(ctx context.Context, registryURL *url.URL, generateTokenFunc token.GeneratorFunc) *NSMgrEntry {
+func (b *Builder) NewNSMgr(ctx context.Context, address string, registryURL *url.URL, generateTokenFunc token.GeneratorFunc) *NSMgrEntry {
+	return b.newNSMgr(logger.WithLog(ctx), address, registryURL, generateTokenFunc)
+}
+
+func (b *Builder) newNSMgr(ctx context.Context, address string, registryURL *url.URL, generateTokenFunc token.GeneratorFunc) *NSMgrEntry {
 	if b.supplyNSMgr == nil {
 		panic("nodes without managers are not supported")
 	}
@@ -291,7 +295,7 @@ func (b *Builder) newNSMgr(ctx context.Context, registryURL *url.URL, generateTo
 	if registryURL != nil {
 		registryCC = b.dialContext(ctx, registryURL)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", address)
 	b.require.NoError(err)
 	serveURL := grpcutils.AddressToURL(listener.Addr())
 	b.require.NoError(listener.Close())
@@ -331,9 +335,9 @@ func serve(ctx context.Context, u *url.URL, register func(server *grpc.Server)) 
 func (b *Builder) NewCrossConnectNSE(ctx context.Context, name string, node *Node, generateTokenFunc token.GeneratorFunc) *EndpointEntry {
 	registrationClient := chain.NewNetworkServiceEndpointRegistryClient(
 		interpose_reg.NewNetworkServiceEndpointRegistryClient(),
+		refresh.NewNetworkServiceEndpointRegistryClient(),
 		adapter_registry.NetworkServiceEndpointServerToClient(node.NSMgr.NetworkServiceEndpointRegistryServer()),
 	)
-
 	return b.newCrossConnectNSE(logger.WithLog(ctx), name, node.NSMgr.URL, registrationClient, generateTokenFunc)
 }
 
