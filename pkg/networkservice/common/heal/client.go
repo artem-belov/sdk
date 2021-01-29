@@ -318,7 +318,7 @@ func (f *healClient) processHeal(baseCtx context.Context, request *networkservic
 
 	var err error
 	candidates := discover.Candidates(baseCtx)
-	if candidates != nil {
+	if candidates != nil || request.GetConnection().GetPath().GetIndex() == 0 {
 		logEntry.Infof("Starting heal process for %s", request.GetConnection().GetId())
 
 		healCtx, healCancel := context.WithCancel(f.serverCtx)
