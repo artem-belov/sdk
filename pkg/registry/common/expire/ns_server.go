@@ -33,7 +33,6 @@ import (
 type nsServer struct {
 	nseClient  registry.NetworkServiceEndpointRegistryClient
 	monitorErr error
-	timers     timerMap
 	nsCounts   intMap
 	contexts   contextMap
 	once       sync.Once
@@ -41,7 +40,7 @@ type nsServer struct {
 }
 
 func (n *nsServer) checkUpdates() {
-	c, err := n.nseClient.Find(n.chainCtx, &registry.NetworkServiceEndpointQuery{
+	stream, err := n.nseClient.Find(n.chainCtx, &registry.NetworkServiceEndpointQuery{
 		NetworkServiceEndpoint: &registry.NetworkServiceEndpoint{},
 		Watch:                  true,
 	})
@@ -49,29 +48,43 @@ func (n *nsServer) checkUpdates() {
 		n.monitorErr = err
 		return
 	}
-	for nse := range registry.ReadNetworkServiceEndpointChannel(c) {
+
+	var timers = make(map[string]*time.Timer)
+
+	unregister := func(ns string) {
+		if ctx, ok := n.contexts.Load(ns); ok {
+			_, _ = n.Unregister(ctx, &registry.NetworkService{Name: ns})
+		}
+	}
+
+	for nse := range registry.ReadNetworkServiceEndpointChannel(stream) {
 		for i := range nse.NetworkServiceNames {
 			ns := nse.NetworkServiceNames[i]
+
+			timer, cotains := timers[nse.Name]
+
 			var value int32
-			stored, _ := n.nsCounts.LoadOrStore(ns, &value)
-			if nse.ExpirationTime != nil && nse.ExpirationTime.Seconds < 0 {
-				atomic.AddInt32(stored, -1)
-			} else {
-				atomic.AddInt32(stored, 1)
-			}
-			duration := time.Until(nse.ExpirationTime.AsTime())
-			timer := time.AfterFunc(duration, func() {
-				if atomic.AddInt32(stored, -1) <= 0 {
-					if ctx, ok := n.contexts.Load(ns); ok {
-						_, _ = n.Unregister(ctx, &registry.NetworkService{Name: ns})
+			refCount, _ := n.nsCounts.LoadOrStore(ns, &value)
+
+			if cotains && atomic.LoadInt32(refCount) != 0 {
+				if nse.ExpirationTime != nil && nse.ExpirationTime.Seconds < 0 {
+					if timer.Stop() && atomic.AddInt32(refCount, -1) <= 0 {
+						unregister(ns)
 					}
+					delete(timers, nse.Name)
+					continue
+				}
+				timer.Stop()
+				timer.Reset(time.Until(nse.ExpirationTime.AsTime().Local()))
+				continue
+			}
+
+			atomic.AddInt32(refCount, 1)
+			timers[nse.Name] = time.AfterFunc(time.Until(nse.ExpirationTime.AsTime().Local()), func() {
+				if atomic.AddInt32(refCount, -1) <= 0 {
+					unregister(ns)
 				}
 			})
-			if v, loaded := n.timers.LoadOrStore(nse.Name, timer); loaded {
-				timer.Stop()
-				v.Stop()
-				v.Reset(duration)
-			}
 		}
 	}
 }
