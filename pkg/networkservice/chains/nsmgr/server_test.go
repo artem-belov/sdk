@@ -397,7 +397,7 @@ func TestNSMGR_PassThroughRemote(t *testing.T) {
 
 func TestNSMGR_HealEndpoint(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 
 	defer cancel()
 	domain := sandbox.NewBuilder(t).
@@ -490,7 +490,7 @@ func TestNSMGR_HealRemoteForwarder(t *testing.T) {
 
 func testNSMGR_HealForwarder(t *testing.T, nodeNum int, customConfig []*sandbox.NodeConfig) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
 	builder := sandbox.NewBuilder(t)
