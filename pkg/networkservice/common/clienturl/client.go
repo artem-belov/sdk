@@ -110,7 +110,7 @@ func (u *clientURLClient) init(requestCtx context.Context) error {
 		}()
 	})
 
-	if u.cc.GetState() == connectivity.TransientFailure {
+	if u.cc != nil && u.cc.GetState() == connectivity.TransientFailure {
 		return fmt.Errorf("client connection %v has failed", clienturlctx.ClientURL(u.ctx))
 	}
 	return u.dialErr
