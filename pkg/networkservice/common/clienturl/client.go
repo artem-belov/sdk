@@ -1,4 +1,6 @@
-// Copyright (c) 2020 Cisco and/or its affiliates.
+// Copyright (c) 2020-2021 Doc.ai and/or its affiliates.
+//
+// Copyright (c) 2020-2021 Cisco and/or its affiliates.
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -107,9 +109,19 @@ func (u *clientURLClient) init(requestCtx context.Context) error {
 
 		u.cc = cc
 		u.client = u.clientFactory(u.ctx, cc)
+
 		go func() {
-			<-u.ctx.Done()
-			_ = cc.Close()
+			defer func() {
+				_ = cc.Close()
+			}()
+			for cc.WaitForStateChange(u.ctx, cc.GetState()) {
+				switch cc.GetState() {
+				case connectivity.Connecting, connectivity.Idle, connectivity.Ready:
+					continue
+				default:
+					return
+				}
+			}
 		}()
 	})
 
