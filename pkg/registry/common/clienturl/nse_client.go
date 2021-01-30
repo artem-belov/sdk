@@ -34,7 +34,6 @@ import (
 
 type nseRegistryURLClient struct {
 	ctx           context.Context
-	cc            *grpc.ClientConn
 	clientFactory func(ctx context.Context, cc grpc.ClientConnInterface) registry.NetworkServiceEndpointRegistryClient
 	dialOptions   []grpc.DialOption
 	initOnce      sync.Once
@@ -89,10 +88,6 @@ func NewNetworkServiceEndpointRegistryClient(ctx context.Context, clientFactory 
 }
 
 func (u *nseRegistryURLClient) init() error {
-	if u.cc != nil && u.cc.GetState() == connectivity.TransientFailure {
-		u.initOnce = sync.Once{}
-	}
-
 	u.initOnce.Do(func() {
 		clientURL := clienturlctx.ClientURL(u.ctx)
 		if clientURL == nil {
@@ -104,11 +99,20 @@ func (u *nseRegistryURLClient) init() error {
 		if u.dialErr != nil {
 			return
 		}
-		u.cc = cc
+
 		u.client = u.clientFactory(u.ctx, cc)
 		go func() {
-			<-u.ctx.Done()
-			_ = cc.Close()
+			defer func() {
+				_ = cc.Close()
+			}()
+			for cc.WaitForStateChange(u.ctx, cc.GetState()) {
+				switch cc.GetState() {
+				case connectivity.Connecting, connectivity.Idle, connectivity.Ready:
+					continue
+				default:
+					return
+				}
+			}
 		}()
 	})
 

@@ -36,7 +36,6 @@ import (
 
 type clientURLClient struct {
 	ctx           context.Context
-	cc            *grpc.ClientConn
 	clientFactory func(ctx context.Context, cc grpc.ClientConnInterface) networkservice.NetworkServiceClient
 	dialOptions   []grpc.DialOption
 	initOnce      sync.Once
@@ -71,10 +70,6 @@ func (u *clientURLClient) Close(ctx context.Context, conn *networkservice.Connec
 }
 
 func (u *clientURLClient) init(requestCtx context.Context) error {
-	if u.cc != nil && u.cc.GetState() == connectivity.TransientFailure {
-		u.initOnce = sync.Once{}
-	}
-
 	u.initOnce.Do(func() {
 		clientURL := clienturlctx.ClientURL(u.ctx)
 		if clientURL == nil {
@@ -107,7 +102,6 @@ func (u *clientURLClient) init(requestCtx context.Context) error {
 			return
 		}
 
-		u.cc = cc
 		u.client = u.clientFactory(u.ctx, cc)
 
 		go func() {
