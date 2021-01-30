@@ -136,7 +136,7 @@ func (b *Builder) Build() *Domain {
 			var forwarderCancel context.CancelFunc
 			forwarderCtx, forwarderCancel = context.WithCancel(forwarderCtx)
 			b.resources = append(b.resources, forwarderCancel)
-			forwarderCtx = logger.WithLog(nsmgrCtx)
+			forwarderCtx = logger.WithLog(forwarderCtx)
 		} else {
 			forwarderCtx = ctx
 		}
@@ -335,7 +335,7 @@ func serve(ctx context.Context, u *url.URL, register func(server *grpc.Server)) 
 func (b *Builder) NewCrossConnectNSE(ctx context.Context, name string, node *Node, generateTokenFunc token.GeneratorFunc) *EndpointEntry {
 	registrationClient := chain.NewNetworkServiceEndpointRegistryClient(
 		interpose_reg.NewNetworkServiceEndpointRegistryClient(),
-		refresh.NewNetworkServiceEndpointRegistryClient(),
+		refresh.NewNetworkServiceEndpointRegistryClient(ctx),
 		adapter_registry.NetworkServiceEndpointServerToClient(node.NSMgr.NetworkServiceEndpointRegistryServer()),
 	)
 	return b.newCrossConnectNSE(logger.WithLog(ctx), name, node.NSMgr.URL, registrationClient, generateTokenFunc)
