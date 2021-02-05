@@ -14,9 +14,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package clienturl
+package grpcutils
 
-import "time"
+import (
+	"errors"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
 
-// DialTimeout is the timeout to limit grpc.Dial call
-const DialTimeout = 100 * time.Millisecond
+// UnwrapErrorCode searches grpc error status Code within error
+func UnwrapCode(err error) codes.Code {
+	if err == nil {
+		return codes.OK
+	}
+	for err != nil {
+		if code := status.Code(err); code != codes.Unknown {
+			return code
+		}
+		err = errors.Unwrap(err)
+	}
+	return codes.Unknown
+}

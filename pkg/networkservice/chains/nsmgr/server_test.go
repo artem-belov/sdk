@@ -552,6 +552,7 @@ func (c *counterServer) Request(ctx context.Context, request *networkservice.Net
 	} else {
 		c.requests[connId] = 1
 	}
+
 	return next.Server(ctx).Request(ctx, request)
 }
 

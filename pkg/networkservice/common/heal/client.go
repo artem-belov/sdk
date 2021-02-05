@@ -44,6 +44,10 @@ type ctxWrapper struct {
 	cancel func()
 }
 
+type connection struct {
+	*networkservice.Connection
+}
+
 type healClient struct {
 	ctx                   context.Context
 	serverCtx             context.Context
@@ -51,6 +55,7 @@ type healClient struct {
 	onHeal                *networkservice.NetworkServiceClient
 	cancelHealMap         map[string]*ctxWrapper
 	cancelHealMapExecutor serialize.Executor
+	conns                 connectionMap
 }
 
 // NewClient - creates a new networkservice.NetworkServiceClient chain element that implements the healing algorithm
@@ -87,6 +92,9 @@ func NewClient(ctx context.Context, client networkservice.MonitorConnectionClien
 }
 
 func (f *healClient) Request(ctx context.Context, request *networkservice.NetworkServiceRequest, opts ...grpc.CallOption) (*networkservice.Connection, error) {
+	// Replace path within connection to the healed one
+	f.replaceConnectionPath(request.GetConnection())
+
 	conn, err := next.Client(ctx).Request(ctx, request, opts...)
 	if err != nil {
 		return nil, err
@@ -95,10 +103,16 @@ func (f *healClient) Request(ctx context.Context, request *networkservice.Networ
 	if err != nil {
 		return nil, err
 	}
+
+	f.conns.Store(request.GetConnection().GetId(), connection{conn})
+
 	return conn, nil
 }
 
 func (f *healClient) Close(ctx context.Context, conn *networkservice.Connection, opts ...grpc.CallOption) (*empty.Empty, error) {
+	// Replace path within connection to the healed one
+	f.replaceConnectionPath(conn)
+
 	f.stopHeal(conn)
 	rv, err := next.Client(ctx).Close(ctx, conn, opts...)
 	if err != nil {
@@ -118,6 +132,7 @@ func (f *healClient) stopHeal(conn *networkservice.Connection) {
 	if cancelHeal != nil {
 		cancelHeal()
 	}
+	f.conns.Delete(conn.GetId())
 }
 
 // startHeal - start a healAsNeeded using the request as the request for re-request if healing is needed.
@@ -179,11 +194,11 @@ func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservi
 		}
 		event, err := recv.Recv()
 		if err != nil {
-			timeout := time.Minute
-			if time.Now().Add(time.Minute).After(expireTime) {
-				timeout = time.Until(expireTime)
+			deadline := time.Now().Add(time.Minute)
+			if deadline.After(expireTime) {
+				deadline = expireTime
 			}
-			newRecv, newRecvErr := f.initialMonitorSegment(ctx, request.GetConnection(), timeout)
+			newRecv, newRecvErr := f.initialMonitorSegment(ctx, request.GetConnection(), time.Until(deadline))
 			if newRecvErr == nil {
 				recv = newRecv
 			} else {
@@ -197,14 +212,24 @@ func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservi
 					return
 				}
 
-				timeout := time.Minute
-				if time.Now().Add(time.Minute).After(expireTime) {
-					timeout = time.Until(expireTime)
+				deadline = time.Now().Add(time.Minute)
+				if deadline.After(expireTime) {
+					deadline = expireTime
 				}
-				ctx, requestCancel := context.WithTimeout(f.ctx, timeout)
+				requestCtx, requestCancel := context.WithDeadline(f.ctx, deadline)
 				defer requestCancel()
 
-				_, err := (*f.onHeal).Request(ctx, request.Clone(), opts...)
+				var err error
+				for {
+					_, err = (*f.onHeal).Request(requestCtx, request.Clone(), opts...)
+					if healMapCtx != ctx {
+						return
+					}
+					if time.Now().After(deadline) || err == nil {
+						break
+					}
+				}
+
 				if err != nil {
 					f.processHeal(baseCtx, request.Clone(), opts...)
 				}
@@ -315,11 +340,12 @@ func (f *healClient) processEvent(baseCtx context.Context, request *networkservi
 
 func (f *healClient) processHeal(baseCtx context.Context, request *networkservice.NetworkServiceRequest, opts ...grpc.CallOption) error {
 	logEntry := logger.Log(baseCtx).WithField("healClient", "processHeal")
+	conn := request.GetConnection()
 
 	var err error
 	candidates := discover.Candidates(baseCtx)
-	if candidates != nil || request.GetConnection().GetPath().GetIndex() == 0 {
-		logEntry.Infof("Starting heal process for %s", request.GetConnection().GetId())
+	if candidates != nil || conn.GetPath().GetIndex() == 0 {
+		logEntry.Infof("Starting heal process for %s", conn.GetId())
 
 		healCtx, healCancel := context.WithCancel(f.serverCtx)
 		defer healCancel()
@@ -332,9 +358,9 @@ func (f *healClient) processHeal(baseCtx context.Context, request *networkservic
 		for f.serverCtx.Err() == nil {
 			_, err = (*f.onHeal).Request(healCtx, reRequest, opts...)
 			if err != nil {
-				logEntry.Errorf("Failed to heal connection %s: %v", request.GetConnection().GetId(), err)
+				logEntry.Errorf("Failed to heal connection %s: %v", conn.GetId(), err)
 			} else {
-				logEntry.Infof("Finished heal process for %s", request.GetConnection().GetId())
+				logEntry.Infof("Finished heal process for %s", conn.GetId())
 				break
 			}
 			runtime.Gosched()
@@ -350,4 +376,14 @@ func (f *healClient) processHeal(baseCtx context.Context, request *networkservic
 		}
 	}
 	return nil
+}
+
+func (f *healClient) replaceConnectionPath(conn *networkservice.Connection) {
+	path := conn.GetPath()
+	if path != nil && int(path.Index) < len(path.PathSegments)-1 {
+		if storedConn, ok := f.conns.Load(conn.GetId()); ok {
+			path.PathSegments = path.PathSegments[:path.Index+1]
+			path.PathSegments = append(path.PathSegments, storedConn.Path.PathSegments[path.Index+1:]...)
+		}
+	}
 }

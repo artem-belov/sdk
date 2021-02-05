@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Doc.ai and/or its affiliates.
+// Copyright (c) 2020 Cisco and/or its affiliates.
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -14,9 +14,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package clienturl
+package heal
 
-import "time"
+import (
+	"sync"
+)
 
-// DialTimeout is the timeout to limit grpc.Dial call
-const DialTimeout = 100 * time.Millisecond
+//go:generate go-syncmap -output connection_map.gen.go -type connectionMap<string,connection>
+
+type connectionMap sync.Map

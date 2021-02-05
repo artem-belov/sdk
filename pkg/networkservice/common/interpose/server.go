@@ -91,7 +91,7 @@ func (l *interposeServer) Request(ctx context.Context, request *networkservice.N
 			crossCTX := clienturlctx.WithClientURL(ctx, crossNSEURL)
 
 			// Store client connection and selected cross connection URL.
-			connInfo, _ = l.activeConnection.LoadOrStore(activeConnID, connectionInfo{
+			l.activeConnection.Store(activeConnID, connectionInfo{
 				clientConnID:    activeConnID,
 				endpointURL:     clientURL,
 				interposeNSEURL: crossNSEURL,

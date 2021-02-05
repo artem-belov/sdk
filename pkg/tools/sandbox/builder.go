@@ -41,7 +41,6 @@ import (
 	"github.com/networkservicemesh/sdk/pkg/registry/chains/proxydns"
 	"github.com/networkservicemesh/sdk/pkg/registry/common/dnsresolve"
 	interpose_reg "github.com/networkservicemesh/sdk/pkg/registry/common/interpose"
-	"github.com/networkservicemesh/sdk/pkg/registry/common/refresh"
 	adapter_registry "github.com/networkservicemesh/sdk/pkg/registry/core/adapters"
 	"github.com/networkservicemesh/sdk/pkg/registry/core/chain"
 	"github.com/networkservicemesh/sdk/pkg/tools/addressof"
@@ -141,7 +140,7 @@ func (b *Builder) Build() *Domain {
 			forwarderCtx = ctx
 		}
 		forwarderName := "cross-nse-" + uuid.New().String()
-		node.Forwarder = b.NewCrossConnectNSE(forwarderCtx, forwarderName, node, nodeConfig.ForwarderGenerateTokenFunc)
+		node.Forwarder = b.NewCrossConnectNSE(forwarderCtx, forwarderName, node.NSMgr, nodeConfig.ForwarderGenerateTokenFunc)
 
 		domain.Nodes = append(domain.Nodes, node)
 	}
@@ -283,8 +282,13 @@ func (b *Builder) newNSMgrProxy(ctx context.Context) *EndpointEntry {
 	}
 }
 
-func (b *Builder) NewNSMgr(ctx context.Context, address string, registryURL *url.URL, generateTokenFunc token.GeneratorFunc) *NSMgrEntry {
-	return b.newNSMgr(logger.WithLog(ctx), address, registryURL, generateTokenFunc)
+func (b *Builder) NewNSMgr(ctx context.Context, address string, registryURL *url.URL, generateTokenFunc token.GeneratorFunc) (entry *NSMgrEntry, resources []context.CancelFunc) {
+	nsmgrCtx, nsmgrCancel := context.WithCancel(ctx)
+	b.resources = append(b.resources, nsmgrCancel)
+
+	entry = b.newNSMgr(logger.WithLog(nsmgrCtx), address, registryURL, generateTokenFunc)
+	resources, b.resources = b.resources, nil
+	return
 }
 
 func (b *Builder) newNSMgr(ctx context.Context, address string, registryURL *url.URL, generateTokenFunc token.GeneratorFunc) *NSMgrEntry {
@@ -332,13 +336,12 @@ func serve(ctx context.Context, u *url.URL, register func(server *grpc.Server)) 
 	}()
 }
 
-func (b *Builder) NewCrossConnectNSE(ctx context.Context, name string, node *Node, generateTokenFunc token.GeneratorFunc) *EndpointEntry {
+func (b *Builder) NewCrossConnectNSE(ctx context.Context, name string, nsmgrEntry *NSMgrEntry, generateTokenFunc token.GeneratorFunc) *EndpointEntry {
 	registrationClient := chain.NewNetworkServiceEndpointRegistryClient(
 		interpose_reg.NewNetworkServiceEndpointRegistryClient(),
-		refresh.NewNetworkServiceEndpointRegistryClient(ctx),
-		adapter_registry.NetworkServiceEndpointServerToClient(node.NSMgr.NetworkServiceEndpointRegistryServer()),
+		adapter_registry.NetworkServiceEndpointServerToClient(nsmgrEntry.NetworkServiceEndpointRegistryServer()),
 	)
-	return b.newCrossConnectNSE(logger.WithLog(ctx), name, node.NSMgr.URL, registrationClient, generateTokenFunc)
+	return b.newCrossConnectNSE(logger.WithLog(ctx), name, nsmgrEntry.URL, registrationClient, generateTokenFunc)
 }
 
 func (b *Builder) newCrossConnectNSE(ctx context.Context, name string, connectTo *url.URL, forwarderRegistrationClient registryapi.NetworkServiceEndpointRegistryClient, generateTokenFunc token.GeneratorFunc) *EndpointEntry {

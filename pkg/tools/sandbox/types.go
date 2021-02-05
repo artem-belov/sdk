@@ -82,6 +82,11 @@ type Domain struct {
 }
 
 // Cleanup frees all resources related to the domain
+func (d *Domain) AddResources(resources []context.CancelFunc) {
+	d.resources = append(d.resources, resources...)
+}
+
+// Cleanup frees all resources related to the domain
 func (d *Domain) Cleanup() {
 	for _, r := range d.resources {
 		r()
