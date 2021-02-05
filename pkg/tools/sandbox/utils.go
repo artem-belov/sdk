@@ -19,13 +19,14 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"github.com/networkservicemesh/api/pkg/api/networkservice/payload"
 	"net/url"
 	"time"
 
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/networkservicemesh/api/pkg/api/networkservice"
 	"github.com/networkservicemesh/api/pkg/api/registry"
@@ -57,7 +58,9 @@ func GenerateExpiringToken(duration time.Duration) token.GeneratorFunc {
 // NewEndpoint creates endpoint and registers it into passed NSMgr.
 func NewEndpoint(ctx context.Context, nse *registry.NetworkServiceEndpoint, generatorFunc token.GeneratorFunc, mgr nsmgr.Nsmgr, additionalFunctionality ...networkservice.NetworkServiceServer) (*EndpointEntry, error) {
 	ep := endpoint.NewServer(ctx, nse.Name, authorize.NewServer(), generatorFunc, additionalFunctionality...)
+
 	ctx = logger.WithLog(ctx)
+
 	u := &url.URL{Scheme: "tcp", Host: "127.0.0.1:0"}
 	var err error
 	if nse.Url != "" {
@@ -67,32 +70,35 @@ func NewEndpoint(ctx context.Context, nse *registry.NetworkServiceEndpoint, gene
 		}
 	}
 	serve(ctx, u, ep.Register)
+
 	if nse.Url == "" {
 		nse.Url = u.String()
 	}
 	if nse.ExpirationTime == nil {
-		deadline := time.Now().Add(time.Hour)
-		expirationTime, err := ptypes.TimestampProto(deadline)
-		if err != nil {
-			return nil, err
-		}
-		nse.ExpirationTime = expirationTime
+		nse.ExpirationTime = timestamppb.New(time.Now().Add(time.Hour))
 	}
 
-	if err = RegisterEndpoint(ctx, nse, mgr); err != nil {
-		return nil, err
-	}
+	RegisterEndpoint(ctx, nse, mgr)
 
 	logger.Log(ctx).Infof("Started listen endpoint %v on %v.", nse.Name, u.String())
+
 	return &EndpointEntry{Endpoint: ep, URL: u}, nil
 }
-
 func RegisterEndpoint(ctx context.Context, nse *registry.NetworkServiceEndpoint, mgr nsmgr.Nsmgr) error {
-	if _, err := mgr.NetworkServiceEndpointRegistryServer().Register(ctx, nse); err != nil {
+	var reg *registry.NetworkServiceEndpoint
+	var err error
+	if reg, err = mgr.NetworkServiceEndpointRegistryServer().Register(ctx, nse); err != nil {
 		return err
 	}
+
+	nse.Name = reg.Name
+	nse.ExpirationTime = reg.ExpirationTime
+
 	for _, service := range nse.NetworkServiceNames {
-		if _, err := mgr.NetworkServiceRegistryServer().Register(ctx, &registry.NetworkService{Name: service, Payload: "IP"}); err != nil {
+		if _, err := mgr.NetworkServiceRegistryServer().Register(ctx, &registry.NetworkService{
+			Name:    service,
+			Payload: payload.IP,
+		}); err != nil {
 			return err
 		}
 	}
