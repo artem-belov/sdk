@@ -223,7 +223,7 @@ func testNSMGR_HealNSMgr(t *testing.T, nodeNum int, customConfig []*sandbox.Node
 	}
 
 	counter := &counterServer{}
-	_, err := sandbox.NewEndpoint(ctx, nseReg, sandbox.GenerateTestToken, domain.Nodes[0].NSMgr, counter)
+	nse, err := sandbox.NewEndpoint(ctx, nseReg, sandbox.GenerateTestToken, domain.Nodes[0].NSMgr, counter)
 	require.NoError(t, err)
 
 	request := &networkservice.NetworkServiceRequest{
@@ -255,6 +255,7 @@ func testNSMGR_HealNSMgr(t *testing.T, nodeNum int, customConfig []*sandbox.Node
 	forwarderName := "cross-nse-restored"
 	builder.NewCrossConnectNSE(ctx, forwarderName, restoredNSMgrEntry, sandbox.GenerateTestToken)
 
+	nseReg.Url = nse.URL.String()
 	err = sandbox.RegisterEndpoint(ctx, nseReg, restoredNSMgrEntry)
 	require.NoError(t, err)
 

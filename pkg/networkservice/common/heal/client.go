@@ -104,7 +104,7 @@ func (f *healClient) Request(ctx context.Context, request *networkservice.Networ
 		return nil, err
 	}
 
-	f.conns.Store(request.GetConnection().GetId(), connection{conn})
+	f.conns.Store(conn.GetId(), connection{conn.Clone()})
 
 	return conn, nil
 }
