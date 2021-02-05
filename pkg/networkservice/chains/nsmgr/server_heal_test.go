@@ -187,25 +187,6 @@ func testNSMGR_HealForwarder(t *testing.T, nodeNum int, customConfig []*sandbox.
 	require.Equal(t, 2, counter.UniqueCloses())
 }
 
-func TestNSMGR_HealLocalNSMgrRestored(t *testing.T) {
-	nsmgrCtx, nsmgrCtxCancel := context.WithTimeout(context.Background(), time.Second)
-	defer func() {
-		nsmgrCtxCancel()
-	}()
-
-	customConfig := []*sandbox.NodeConfig{
-		nil,
-		{
-			NsmgrCtx:                   nsmgrCtx,
-			NsmgrGenerateTokenFunc:     sandbox.GenerateExpiringToken(time.Second),
-			ForwarderCtx:               nsmgrCtx,
-			ForwarderGenerateTokenFunc: sandbox.GenerateExpiringToken(time.Second),
-		},
-	}
-
-	testNSMGR_HealNSMgr(t, 1, customConfig, nsmgrCtxCancel)
-}
-
 func TestNSMGR_HealRemoteNSMgrRestored(t *testing.T) {
 	nsmgrCtx, nsmgrCtxCancel := context.WithTimeout(context.Background(), time.Second)
 	defer nsmgrCtxCancel()
