@@ -52,18 +52,15 @@ import (
 //                        If onHeal nil, onHeal will be pointed to the returned networkservice.NetworkServiceClient
 //             - cc - grpc.ClientConnInterface for the endpoint to which this client should connect
 //             - additionalFunctionality - any additional NetworkServiceClient chain elements to be included in the chain
-func NewClient(ctx context.Context, name string, onHeal *networkservice.NetworkServiceClient, tokenGenerator token.GeneratorFunc, cc grpc.ClientConnInterface, additionalFunctionality ...networkservice.NetworkServiceClient) networkservice.NetworkServiceClient {
+func NewClient(ctx context.Context, name string, registerClientFunc heal.RegisterClientFunc, tokenGenerator token.GeneratorFunc, cc grpc.ClientConnInterface, additionalFunctionality ...networkservice.NetworkServiceClient) networkservice.NetworkServiceClient {
 	var rv networkservice.NetworkServiceClient
-	if onHeal == nil {
-		onHeal = &rv
-	}
 	rv = chain.NewNetworkServiceClient(
 		append(
 			append([]networkservice.NetworkServiceClient{
 				authorize.NewClient(),
 				updatepath.NewClient(name),
 				serialize.NewClient(),
-				heal.NewClient(ctx, networkservice.NewMonitorConnectionClient(cc), onHeal),
+				heal.NewClient(ctx, networkservice.NewMonitorConnectionClient(cc), registerClientFunc),
 				refresh.NewClient(ctx),
 				metadata.NewClient(),
 			}, additionalFunctionality...),
@@ -75,18 +72,18 @@ func NewClient(ctx context.Context, name string, onHeal *networkservice.NetworkS
 }
 
 // NewCrossConnectClientFactory - returns a (2.) case func(cc grpc.ClientConnInterface) NSM client factory.
-func NewCrossConnectClientFactory(name string, onHeal *networkservice.NetworkServiceClient, tokenGenerator token.GeneratorFunc, additionalFunctionality ...networkservice.NetworkServiceClient) func(ctx context.Context, cc grpc.ClientConnInterface) networkservice.NetworkServiceClient {
+func NewCrossConnectClientFactory(name string, registerClientFunc heal.RegisterClientFunc, tokenGenerator token.GeneratorFunc, additionalFunctionality ...networkservice.NetworkServiceClient) func(ctx context.Context, cc grpc.ClientConnInterface) networkservice.NetworkServiceClient {
 	return func(ctx context.Context, cc grpc.ClientConnInterface) networkservice.NetworkServiceClient {
 		return chain.NewNetworkServiceClient(
 			mechanismtranslation.NewClient(),
-			NewClient(ctx, name, onHeal, tokenGenerator, cc, additionalFunctionality...),
+			NewClient(ctx, name, registerClientFunc, tokenGenerator, cc, additionalFunctionality...),
 		)
 	}
 }
 
 // NewClientFactory - returns a (3.) case func(cc grpc.ClientConnInterface) NSM client factory.
-func NewClientFactory(name string, onHeal *networkservice.NetworkServiceClient, tokenGenerator token.GeneratorFunc, additionalFunctionality ...networkservice.NetworkServiceClient) func(ctx context.Context, cc grpc.ClientConnInterface) networkservice.NetworkServiceClient {
+func NewClientFactory(name string, registerClientFunc heal.RegisterClientFunc, tokenGenerator token.GeneratorFunc, additionalFunctionality ...networkservice.NetworkServiceClient) func(ctx context.Context, cc grpc.ClientConnInterface) networkservice.NetworkServiceClient {
 	return func(ctx context.Context, cc grpc.ClientConnInterface) networkservice.NetworkServiceClient {
-		return NewClient(ctx, name, onHeal, tokenGenerator, cc, additionalFunctionality...)
+		return NewClient(ctx, name, registerClientFunc, tokenGenerator, cc, additionalFunctionality...)
 	}
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/networkservicemesh/sdk/pkg/networkservice/common/authorize"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/common/clienturl"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/common/connect"
+	"github.com/networkservicemesh/sdk/pkg/networkservice/common/heal"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/core/adapters"
 	"github.com/networkservicemesh/sdk/pkg/registry/chains/memory"
 	"github.com/networkservicemesh/sdk/pkg/registry/chains/proxydns"
@@ -401,17 +402,19 @@ func supplyDummyForwarder(ctx context.Context, name string, generateToken token.
 		endpoint.Endpoint
 	}
 	rv := &forwarderServer{}
+
+	healServer := heal.NewServer(ctx, addressof.NetworkServiceClient(adapters.NewServerToClient(rv)))
 	rv.Endpoint = endpoint.NewServer(ctx,
 		name,
 		authorize.NewServer(),
 		generateToken,
 		// Statically set the url we use to the unix file socket for the NSMgr
 		clienturl.NewServer(connectTo),
+		healServer,
 		connect.NewServer(ctx,
 			client.NewCrossConnectClientFactory(
 				name,
-				// What to call onHeal
-				addressof.NetworkServiceClient(adapters.NewServerToClient(rv)),
+				healServer.RegisterClient,
 				generateToken),
 			dialOptions...,
 		),

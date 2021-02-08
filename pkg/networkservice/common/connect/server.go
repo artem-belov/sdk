@@ -167,7 +167,6 @@ func (s *connectServer) newClient(clientURL *url.URL) (networkservice.NetworkSer
 	clientPtr := new(networkservice.NetworkServiceClient)
 
 	ctx, cancel := context.WithCancel(s.ctx)
-	ctx = withServerContext(ctx, s.ctx)
 	onClose := func() bool {
 		client, ok := s.clients.Load(clientURL.String())
 		if ok {

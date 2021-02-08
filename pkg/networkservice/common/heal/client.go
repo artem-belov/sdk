@@ -1,5 +1,3 @@
-// Copyright (c) 2020 Cisco Systems, Inc.
-//
 // Copyright (c) 2021 Doc.ai and/or its affiliates.
 //
 // SPDX-License-Identifier: Apache-2.0
@@ -21,369 +19,39 @@ package heal
 
 import (
 	"context"
-	"runtime"
-	"time"
 
-	"github.com/edwarnicke/serialize"
-	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/empty"
-	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 
 	"github.com/networkservicemesh/api/pkg/api/networkservice"
-
-	"github.com/networkservicemesh/sdk/pkg/networkservice/common/connect"
-	"github.com/networkservicemesh/sdk/pkg/networkservice/common/discover"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/core/next"
-	"github.com/networkservicemesh/sdk/pkg/tools/addressof"
-	"github.com/networkservicemesh/sdk/pkg/tools/logger"
 )
 
-type ctxWrapper struct {
-	ctx    context.Context
-	cancel func()
-}
-
-type connection struct {
-	*networkservice.Connection
-}
+type RegisterClientFunc func(context.Context, *networkservice.Connection, networkservice.MonitorConnectionClient)
 
 type healClient struct {
-	ctx                   context.Context
-	serverCtx             context.Context
-	client                networkservice.MonitorConnectionClient
-	onHeal                *networkservice.NetworkServiceClient
-	cancelHealMap         map[string]*ctxWrapper
-	cancelHealMapExecutor serialize.Executor
-	conns                 connectionMap
+	ctx            context.Context
+	cc             networkservice.MonitorConnectionClient
+	registerClient RegisterClientFunc
 }
 
-// NewClient - creates a new networkservice.NetworkServiceClient chain element that implements the healing algorithm
-//             - ctx    - context for the lifecycle of the *Client* itself.  Cancel when discarding the client.
-//             - client - networkservice.MonitorConnectionClient that can be used to call MonitorConnection against the endpoint
-//             - onHeal - *networkservice.NetworkServiceClient.  Since networkservice.NetworkServiceClient is an interface
-//                        (and thus a pointer) *networkservice.NetworkServiceClient is a double pointer.  Meaning it
-//                        points to a place that points to a place that implements networkservice.NetworkServiceClient
-//                        This is done because when we use heal.NewClient as part of a chain, we may not *have*
-//                        a pointer to this
-//                        client used 'onHeal'.  If we detect we need to heal, onHeal.Request is used to heal.
-//                        If onHeal is nil, then we simply set onHeal to this client chain element
-//                        If we are part of a larger chain or a server, we should pass the resulting chain into
-//                        this constructor before we actually have a pointer to it.
-//                        If onHeal nil, onHeal will be pointed to the returned networkservice.NetworkServiceClient
-func NewClient(ctx context.Context, client networkservice.MonitorConnectionClient, onHeal *networkservice.NetworkServiceClient) networkservice.NetworkServiceClient {
-	rv := &healClient{
-		ctx:           ctx,
-		serverCtx:     connect.ServerContext(ctx),
-		client:        client,
-		onHeal:        onHeal,
-		cancelHealMap: make(map[string]*ctxWrapper),
+// NewClient - creates a new networkservice.NetworkServiceClient chain element that inform healServer about new client connection
+func NewClient(ctx context.Context, cc networkservice.MonitorConnectionClient, registerClient RegisterClientFunc) networkservice.NetworkServiceClient {
+	return &healClient{
+		ctx:            ctx,
+		cc:             cc,
+		registerClient: registerClient,
 	}
-
-	if rv.onHeal == nil {
-		rv.onHeal = addressof.NetworkServiceClient(rv)
-	}
-
-	if rv.serverCtx == nil {
-		rv.serverCtx = ctx
-	}
-
-	return rv
 }
 
-func (f *healClient) Request(ctx context.Context, request *networkservice.NetworkServiceRequest, opts ...grpc.CallOption) (*networkservice.Connection, error) {
-	// Replace path within connection to the healed one
-	f.replaceConnectionPath(request.GetConnection())
-
+func (u *healClient) Request(ctx context.Context, request *networkservice.NetworkServiceRequest, opts ...grpc.CallOption) (*networkservice.Connection, error) {
 	conn, err := next.Client(ctx).Request(ctx, request, opts...)
-	if err != nil {
-		return nil, err
+	if err == nil && u.registerClient != nil {
+		u.registerClient(u.ctx, conn, u.cc)
 	}
-	err = f.startHeal(ctx, request.Clone().SetRequestConnection(conn.Clone()), opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	f.conns.Store(conn.GetId(), connection{conn.Clone()})
-
-	return conn, nil
+	return conn, err
 }
 
-func (f *healClient) Close(ctx context.Context, conn *networkservice.Connection, opts ...grpc.CallOption) (*empty.Empty, error) {
-	// Replace path within connection to the healed one
-	f.replaceConnectionPath(conn)
-
-	f.stopHeal(conn)
-	rv, err := next.Client(ctx).Close(ctx, conn, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return rv, nil
-}
-
-func (f *healClient) stopHeal(conn *networkservice.Connection) {
-	var cancelHeal func()
-	<-f.cancelHealMapExecutor.AsyncExec(func() {
-		if cancelHealEntry, ok := f.cancelHealMap[conn.GetId()]; ok {
-			cancelHeal = cancelHealEntry.cancel
-			delete(f.cancelHealMap, conn.GetId())
-		}
-	})
-	if cancelHeal != nil {
-		cancelHeal()
-	}
-	f.conns.Delete(conn.GetId())
-}
-
-// startHeal - start a healAsNeeded using the request as the request for re-request if healing is needed.
-func (f *healClient) startHeal(ctx context.Context, request *networkservice.NetworkServiceRequest, opts ...grpc.CallOption) error {
-	errCh := make(chan error, 1)
-	go f.healAsNeeded(ctx, request, errCh, opts...)
-	return <-errCh
-}
-
-// healAsNeeded - heal the connection found in request.  Will immediately do a monitor to make sure the server has the
-// expected connection and it is sane, returning an error via errCh if there is an issue, and nil via errCh if there is
-// not.  You will only *ever* receive one real error via the errCh.  errCh will be closed when healAsNeeded is finished
-// allowing it to double as a 'done' channel we can use when we stopHealing in f.Close.
-// healAsNeeded will then continue to monitor the servers opinions about the state of the connection until either
-// expireTime has passed or stopHeal is called (as in Close) or a different pathSegment is found via monitoring
-// indicating that a later Request has occurred and in doing so created its own healAsNeeded and so we can stop this one
-func (f *healClient) healAsNeeded(baseCtx context.Context, request *networkservice.NetworkServiceRequest, errCh chan error, opts ...grpc.CallOption) {
-	// When we are done, close the errCh
-	defer close(errCh)
-
-	pathSegment := request.GetConnection().GetNextPathSegment()
-
-	// Make sure we have a valid expireTime to work with
-	expireTime, err := ptypes.Timestamp(pathSegment.GetExpires())
-	if err != nil {
-		errCh <- errors.Wrapf(err, "error converting pathSegment.GetExpires() to time.Time: %+v", pathSegment.GetExpires())
-		return
-	}
-
-	// Set the ctx Deadline to expireTime based on the heal servers context
-	ctx, cancel := context.WithDeadline(f.ctx, expireTime)
-	defer cancel()
-	id := request.GetConnection().GetId()
-	<-f.cancelHealMapExecutor.AsyncExec(func() {
-		if entry, ok := f.cancelHealMap[id]; ok {
-			go entry.cancel() // TODO - what to do with the errCh here?
-		}
-		f.cancelHealMap[id] = &ctxWrapper{
-			ctx:    ctx,
-			cancel: cancel,
-		}
-	})
-
-	// Monitor the pathSegment for the first time, so we can pass back an error
-	// if we can't confirm via monitor the other side has the expected state
-	recv, err := f.initialMonitorSegment(ctx, request.GetConnection(), time.Until(expireTime))
-	if err != nil {
-		errCh <- errors.Wrapf(err, "error calling MonitorConnection_MonitorConnectionsClient.Recv to get initial confirmation server has connection: %+v", request.GetConnection())
-		return
-	}
-
-	// Tell the caller all is well by sending them a nil err so the call can continue
-	errCh <- nil
-
-	// Start looping over events
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		event, err := recv.Recv()
-		if err != nil {
-			deadline := time.Now().Add(time.Minute)
-			if deadline.After(expireTime) {
-				deadline = expireTime
-			}
-			newRecv, newRecvErr := f.initialMonitorSegment(ctx, request.GetConnection(), time.Until(deadline))
-			if newRecvErr == nil {
-				recv = newRecv
-			} else {
-				var healMapCtx context.Context
-				<-f.cancelHealMapExecutor.AsyncExec(func() {
-					if entry, ok := f.cancelHealMap[id]; ok {
-						healMapCtx = entry.ctx
-					}
-				})
-				if healMapCtx != ctx || f.ctx.Err() != nil {
-					return
-				}
-
-				deadline = time.Now().Add(time.Minute)
-				if deadline.After(expireTime) {
-					deadline = expireTime
-				}
-				requestCtx, requestCancel := context.WithDeadline(f.ctx, deadline)
-				defer requestCancel()
-
-				var err error
-				for {
-					_, err = (*f.onHeal).Request(requestCtx, request.Clone(), opts...)
-					if healMapCtx != ctx {
-						return
-					}
-					if time.Now().After(deadline) || err == nil {
-						break
-					}
-				}
-
-				if err != nil {
-					f.processHeal(baseCtx, request.Clone(), opts...)
-				}
-
-				return
-			}
-			runtime.Gosched()
-			continue
-		}
-		if ctx.Err() != nil || f.ctx.Err() != nil {
-			return
-		}
-		if err := f.processEvent(baseCtx, request, event, opts...); err != nil {
-			if err != nil {
-				return
-			}
-		}
-	}
-}
-
-// initialMonitorSegment - monitors for pathSegment and returns a recv and an error if the server does not have
-// a record for the connection matching our expectations
-func (f *healClient) initialMonitorSegment(ctx context.Context, conn *networkservice.Connection, timeout time.Duration) (networkservice.MonitorConnection_MonitorConnectionsClient, error) {
-	errCh := make(chan error, 1)
-	var recv networkservice.MonitorConnection_MonitorConnectionsClient
-	pathSegment := conn.GetNextPathSegment()
-
-	initialCtx, cancel := context.WithCancel(ctx)
-
-	go func() {
-		// If pathSegment is nil, the server is very very screwed up
-		if pathSegment == nil {
-			errCh <- errors.New("pathSegment for server connection must not be nil")
-			return
-		}
-
-		// Monitor *just* this connection
-		var err error
-		recv, err = f.client.MonitorConnections(initialCtx, &networkservice.MonitorScopeSelector{
-			PathSegments: []*networkservice.PathSegment{
-				pathSegment,
-			},
-		})
-		if err != nil {
-			errCh <- errors.Wrap(err, "error when attempting to MonitorConnections")
-			return
-		}
-
-		// Get an initial event to make sure we have the expected connection
-		event, err := recv.Recv()
-		if err != nil {
-			errCh <- err
-			return
-		}
-		// If we didn't get an event something very bad has happened
-		if event.Connections == nil || event.Connections[pathSegment.GetId()] == nil {
-			errCh <- errors.Errorf("connection with id %s not found in MonitorConnections event as expected: event: %+v", pathSegment.Id, event)
-			return
-		}
-		// If its not *our* connection something's gone wrong like a later Request succeeding
-		if !pathSegment.Equal(event.GetConnections()[pathSegment.GetId()].GetCurrentPathSegment()) {
-			errCh <- errors.Errorf("server reports a different connection for this id, pathSegments do not match.  Expected: %+v Received %+v", pathSegment, event.GetConnections()[pathSegment.GetId()].GetCurrentPathSegment())
-			return
-		}
-		errCh <- nil
-	}()
-
-	select {
-	case err := <-errCh:
-		return recv, err
-	case <-time.After(timeout):
-		cancel()
-		err := <-errCh
-		return recv, err
-	}
-
-	return recv, nil
-}
-
-// processEvent - process event, calling (*f.OnHeal).Request(ctx,request,opts...) if the server does not have our connection.
-// returns a non-nil error if the event is such that we should no longer to continue to attempt to heal.
-func (f *healClient) processEvent(baseCtx context.Context, request *networkservice.NetworkServiceRequest, event *networkservice.ConnectionEvent, opts ...grpc.CallOption) error {
-	pathSegment := request.GetConnection().GetNextPathSegment()
-	switch event.GetType() {
-	case networkservice.ConnectionEventType_UPDATE:
-		// We should never receive an UPDATE that isn't ours, but in case we do...
-		if event.Connections == nil || event.Connections[pathSegment.GetId()] == nil {
-			break
-		}
-		fallthrough
-	case networkservice.ConnectionEventType_INITIAL_STATE_TRANSFER:
-		if event.Connections != nil && event.Connections[pathSegment.GetId()] != nil {
-			// If the server has a pathSegment for this Connection.Id, but its not the one we
-			// got back from it... we should fail, as different Request came after ours successfully
-			if !pathSegment.Equal(event.GetConnections()[pathSegment.GetId()].GetCurrentPathSegment()) {
-				return errors.Errorf("server has a different pathSegment than was returned to this call.")
-			}
-			break
-		}
-		fallthrough
-	case networkservice.ConnectionEventType_DELETE:
-		if event.Connections != nil && event.Connections[pathSegment.GetId()] != nil && pathSegment.Equal(event.GetConnections()[pathSegment.GetId()].GetCurrentPathSegment()) {
-			f.processHeal(baseCtx, request, opts...)
-		}
-	}
-	return nil
-}
-
-func (f *healClient) processHeal(baseCtx context.Context, request *networkservice.NetworkServiceRequest, opts ...grpc.CallOption) error {
-	logEntry := logger.Log(baseCtx).WithField("healClient", "processHeal")
-	conn := request.GetConnection()
-
-	var err error
-	candidates := discover.Candidates(baseCtx)
-	if candidates != nil || conn.GetPath().GetIndex() == 0 {
-		logEntry.Infof("Starting heal process for %s", conn.GetId())
-
-		healCtx, healCancel := context.WithCancel(f.serverCtx)
-		defer healCancel()
-
-		reRequest := request.Clone()
-		reRequest.GetConnection().NetworkServiceEndpointName = ""
-		path := reRequest.GetConnection().Path
-		reRequest.GetConnection().Path.PathSegments = path.PathSegments[0 : path.Index+1]
-
-		for f.serverCtx.Err() == nil {
-			_, err = (*f.onHeal).Request(healCtx, reRequest, opts...)
-			if err != nil {
-				logEntry.Errorf("Failed to heal connection %s: %v", conn.GetId(), err)
-			} else {
-				logEntry.Infof("Finished heal process for %s", conn.GetId())
-				break
-			}
-			runtime.Gosched()
-		}
-	} else {
-		// Huge timeout is not required to close connection on a current path segment
-		closeCtx, closeCancel := context.WithTimeout(f.serverCtx, 1*time.Second)
-		defer closeCancel()
-
-		_, err := (*f.onHeal).Close(closeCtx, request.GetConnection().Clone(), opts...)
-		if err != nil {
-			logEntry.Errorf("Failed to close connection %s: %v", request.GetConnection().GetId(), err)
-		}
-	}
-	return nil
-}
-
-func (f *healClient) replaceConnectionPath(conn *networkservice.Connection) {
-	path := conn.GetPath()
-	if path != nil && int(path.Index) < len(path.PathSegments)-1 {
-		if storedConn, ok := f.conns.Load(conn.GetId()); ok {
-			path.PathSegments = path.PathSegments[:path.Index+1]
-			path.PathSegments = append(path.PathSegments, storedConn.Path.PathSegments[path.Index+1:]...)
-		}
-	}
+func (u *healClient) Close(ctx context.Context, conn *networkservice.Connection, opts ...grpc.CallOption) (*empty.Empty, error) {
+	return next.Client(ctx).Close(ctx, conn, opts...)
 }

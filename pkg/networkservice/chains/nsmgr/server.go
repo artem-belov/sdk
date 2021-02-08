@@ -23,40 +23,37 @@ import (
 	"context"
 	"time"
 
-	"github.com/networkservicemesh/sdk/pkg/networkservice/chains/client"
-	"github.com/networkservicemesh/sdk/pkg/networkservice/common/mechanisms/recvfd"
-	"github.com/networkservicemesh/sdk/pkg/networkservice/common/mechanisms/sendfd"
-	"github.com/networkservicemesh/sdk/pkg/registry/common/expire"
-	"github.com/networkservicemesh/sdk/pkg/registry/common/querycache"
-	"github.com/networkservicemesh/sdk/pkg/registry/core/next"
-
-	"github.com/networkservicemesh/sdk/pkg/networkservice/common/filtermechanisms"
-	"github.com/networkservicemesh/sdk/pkg/networkservice/common/interpose"
-	"github.com/networkservicemesh/sdk/pkg/registry"
+	"google.golang.org/grpc"
 
 	"github.com/networkservicemesh/api/pkg/api/networkservice"
 	registryapi "github.com/networkservicemesh/api/pkg/api/registry"
-	"google.golang.org/grpc"
 
-	"github.com/networkservicemesh/sdk/pkg/networkservice/common/excludedprefixes"
-
-	"github.com/networkservicemesh/sdk/pkg/tools/grpcutils"
-
-	"github.com/networkservicemesh/sdk/pkg/registry/common/memory"
-	registry_recvfd "github.com/networkservicemesh/sdk/pkg/registry/common/recvfd"
-	"github.com/networkservicemesh/sdk/pkg/registry/common/setid"
-	"github.com/networkservicemesh/sdk/pkg/registry/common/seturl"
-	chain_registry "github.com/networkservicemesh/sdk/pkg/registry/core/chain"
-	"github.com/networkservicemesh/sdk/pkg/registry/core/nextwrap"
-
+	"github.com/networkservicemesh/sdk/pkg/networkservice/chains/client"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/chains/endpoint"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/common/connect"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/common/discover"
+	"github.com/networkservicemesh/sdk/pkg/networkservice/common/excludedprefixes"
+	"github.com/networkservicemesh/sdk/pkg/networkservice/common/filtermechanisms"
+	"github.com/networkservicemesh/sdk/pkg/networkservice/common/heal"
+	"github.com/networkservicemesh/sdk/pkg/networkservice/common/interpose"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/common/localbypass"
+	"github.com/networkservicemesh/sdk/pkg/networkservice/common/mechanisms/recvfd"
+	"github.com/networkservicemesh/sdk/pkg/networkservice/common/mechanisms/sendfd"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/common/roundrobin"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/core/adapters"
+	"github.com/networkservicemesh/sdk/pkg/registry"
+	"github.com/networkservicemesh/sdk/pkg/registry/common/expire"
+	"github.com/networkservicemesh/sdk/pkg/registry/common/memory"
+	"github.com/networkservicemesh/sdk/pkg/registry/common/querycache"
+	registry_recvfd "github.com/networkservicemesh/sdk/pkg/registry/common/recvfd"
+	"github.com/networkservicemesh/sdk/pkg/registry/common/setid"
+	"github.com/networkservicemesh/sdk/pkg/registry/common/seturl"
 	adapter_registry "github.com/networkservicemesh/sdk/pkg/registry/core/adapters"
+	chain_registry "github.com/networkservicemesh/sdk/pkg/registry/core/chain"
+	"github.com/networkservicemesh/sdk/pkg/registry/core/next"
+	"github.com/networkservicemesh/sdk/pkg/registry/core/nextwrap"
 	"github.com/networkservicemesh/sdk/pkg/tools/addressof"
+	"github.com/networkservicemesh/sdk/pkg/tools/grpcutils"
 	"github.com/networkservicemesh/sdk/pkg/tools/token"
 )
 
@@ -107,6 +104,8 @@ func NewServer(ctx context.Context, nsmRegistration *registryapi.NetworkServiceE
 	nsClient := adapter_registry.NetworkServiceServerToClient(nsRegistry)
 	var interposeRegistry registryapi.NetworkServiceEndpointRegistryServer
 
+	healServer := heal.NewServer(ctx, addressof.NetworkServiceClient(adapters.NewServerToClient(rv)))
+
 	// Construct Endpoint
 	rv.Endpoint = endpoint.NewServer(ctx,
 		nsmRegistration.Name,
@@ -119,10 +118,11 @@ func NewServer(ctx context.Context, nsmRegistration *registryapi.NetworkServiceE
 		recvfd.NewServer(), // Receive any files passed
 		interpose.NewServer(&interposeRegistry),
 		filtermechanisms.NewServer(&urlsRegistryServer),
+		healServer,
 		connect.NewServer(ctx,
 			client.NewClientFactory(
 				nsmRegistration.Name,
-				addressof.NetworkServiceClient(adapters.NewServerToClient(rv)),
+				healServer.RegisterClient,
 				tokenGenerator,
 				recvfd.NewClient(),
 				sendfd.NewClient(), // Send passed files.
