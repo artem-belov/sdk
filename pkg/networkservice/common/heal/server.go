@@ -234,7 +234,7 @@ func (f *healServer) healAsNeeded(baseCtx context.Context, request *networkservi
 				defer requestCancel()
 
 				var err error
-				for {
+				for f.ctx.Err() == nil {
 					_, err = (*f.onHeal).Request(requestCtx, request.Clone(), opts...)
 					if healMapCtx != ctx {
 						return
