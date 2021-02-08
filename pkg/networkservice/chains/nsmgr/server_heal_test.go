@@ -90,7 +90,7 @@ func TestNSMGR_HealEndpoint(t *testing.T) {
 	nseCtxCancel()
 
 	// Wait NSE expired and reconnecting to the new NSE
-	<-time.After(2 * time.Second)
+	<-time.After(5 * time.Second)
 
 	// Close.
 	e, err := nsc.Close(ctx, conn)
