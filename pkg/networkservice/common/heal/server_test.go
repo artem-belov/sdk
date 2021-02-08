@@ -78,9 +78,11 @@ func TestHealClient_Request(t *testing.T) {
 		monitor.NewServer(ctx, &monitorServer),
 		updatetoken.NewServer(sandbox.GenerateTestToken),
 	)
+	healServer := heal.NewServer(ctx, addressof.NetworkServiceClient(onHeal))
 	client := chain.NewNetworkServiceClient(
 		updatepath.NewClient("testClient"),
-		adapters.NewServerToClient(heal.NewServer(ctx, addressof.NetworkServiceClient(onHeal))),
+		adapters.NewServerToClient(healServer),
+		heal.NewClient(ctx, adapters.NewMonitorServerToClient(monitorServer), healServer.RegisterClient),
 		updatetoken.NewClient(sandbox.GenerateTestToken),
 		adapters.NewServerToClient(server),
 	)
@@ -138,9 +140,12 @@ func TestHealClient_EmptyInit(t *testing.T) {
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
+
+	healServer := heal.NewServer(ctx, addressof.NetworkServiceClient(onHeal))
 	client := chain.NewNetworkServiceClient(
 		updatepath.NewClient("testClient"),
-		adapters.NewServerToClient(heal.NewServer(ctx, addressof.NetworkServiceClient(onHeal))),
+		adapters.NewServerToClient(healServer),
+		heal.NewClient(ctx, eventchannel.NewMonitorConnectionClient(eventCh), healServer.RegisterClient),
 		updatetoken.NewClient(sandbox.GenerateTestToken),
 		updatepath.NewClient("testServer"),
 		eventTrigger,

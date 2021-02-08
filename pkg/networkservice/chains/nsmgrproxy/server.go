@@ -44,7 +44,7 @@ func NewServer(ctx context.Context, name string, tokenGenerator token.GeneratorF
 	rv := nsmgrProxyServer{}
 
 	healServer := heal.NewServer(ctx, addressof.NetworkServiceClient(adapters.NewServerToClient(rv)))
-	endpoint.NewServer(ctx,
+	rv.Endpoint = endpoint.NewServer(ctx,
 		name,
 		authorize.NewServer(),
 		tokenGenerator,
