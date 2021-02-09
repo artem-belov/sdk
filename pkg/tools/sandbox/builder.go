@@ -53,6 +53,7 @@ import (
 
 const defaultContextTimeout = time.Second * 15
 
+// NodeConfig keeps custom node configuration parameters
 type NodeConfig struct {
 	NsmgrCtx                   context.Context
 	NsmgrGenerateTokenFunc     token.GeneratorFunc
@@ -283,6 +284,7 @@ func (b *Builder) newNSMgrProxy(ctx context.Context) *EndpointEntry {
 	}
 }
 
+// NewNSMgr - starts new Network Service Manager
 func (b *Builder) NewNSMgr(ctx context.Context, address string, registryURL *url.URL, generateTokenFunc token.GeneratorFunc) (entry *NSMgrEntry, resources []context.CancelFunc) {
 	nsmgrCtx, nsmgrCancel := context.WithCancel(ctx)
 	b.resources = append(b.resources, nsmgrCancel)
@@ -337,6 +339,7 @@ func serve(ctx context.Context, u *url.URL, register func(server *grpc.Server)) 
 	}()
 }
 
+// NewCrossConnectNSE - starts new Cross Connect Network Service Endpoint
 func (b *Builder) NewCrossConnectNSE(ctx context.Context, name string, nsmgrEntry *NSMgrEntry, generateTokenFunc token.GeneratorFunc) *EndpointEntry {
 	registrationClient := chain.NewNetworkServiceEndpointRegistryClient(
 		interpose_reg.NewNetworkServiceEndpointRegistryClient(),
@@ -403,7 +406,7 @@ func supplyDummyForwarder(ctx context.Context, name string, generateToken token.
 	}
 	rv := &forwarderServer{}
 
-	healServer := heal.NewServer(ctx, addressof.NetworkServiceClient(adapters.NewServerToClient(rv)))
+	healServer, registerClient := heal.NewServer(ctx, addressof.NetworkServiceClient(adapters.NewServerToClient(rv)))
 	rv.Endpoint = endpoint.NewServer(ctx,
 		name,
 		authorize.NewServer(),
@@ -414,7 +417,7 @@ func supplyDummyForwarder(ctx context.Context, name string, generateToken token.
 		connect.NewServer(ctx,
 			client.NewCrossConnectClientFactory(
 				name,
-				healServer.RegisterClient,
+				registerClient,
 				generateToken),
 			dialOptions...,
 		),

@@ -19,7 +19,6 @@ package sandbox
 import (
 	"context"
 	"fmt"
-	"github.com/networkservicemesh/api/pkg/api/networkservice/payload"
 	"net/url"
 	"time"
 
@@ -29,6 +28,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/networkservicemesh/api/pkg/api/networkservice"
+	"github.com/networkservicemesh/api/pkg/api/networkservice/payload"
 	"github.com/networkservicemesh/api/pkg/api/registry"
 
 	"github.com/networkservicemesh/sdk/pkg/networkservice/chains/client"
@@ -78,12 +78,17 @@ func NewEndpoint(ctx context.Context, nse *registry.NetworkServiceEndpoint, gene
 		nse.ExpirationTime = timestamppb.New(time.Now().Add(time.Hour))
 	}
 
-	RegisterEndpoint(ctx, nse, mgr)
+	err = RegisterEndpoint(ctx, nse, mgr)
+	if err != nil {
+		return nil, err
+	}
 
 	logger.Log(ctx).Infof("Started listen endpoint %v on %v.", nse.Name, u.String())
 
 	return &EndpointEntry{Endpoint: ep, URL: u}, nil
 }
+
+// RegisterEndpoint - registers Network Service Endpoint at the Registry Server
 func RegisterEndpoint(ctx context.Context, nse *registry.NetworkServiceEndpoint, mgr nsmgr.Nsmgr) error {
 	var reg *registry.NetworkServiceEndpoint
 	var err error

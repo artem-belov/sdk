@@ -24,9 +24,11 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/networkservicemesh/api/pkg/api/networkservice"
+
 	"github.com/networkservicemesh/sdk/pkg/networkservice/core/next"
 )
 
+// RegisterClientFunc - required to inform heal server about new client connection and assign it to the connection ID
 type RegisterClientFunc func(context.Context, *networkservice.Connection, networkservice.MonitorConnectionClient)
 
 type healClient struct {

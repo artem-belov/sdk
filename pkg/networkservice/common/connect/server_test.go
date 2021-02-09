@@ -152,7 +152,7 @@ func TestConnectServer_Request(t *testing.T) {
 		require.Equal(t, requestNext.Connection.String(), conn.String())
 
 		require.Equal(t, 1, len(cs.clientsCloseFuncs))
-		require.Equal(t, 1, connInfoMapLen(cs.connInfos))
+		require.Equal(t, 1, connInfoMapLen(&cs.connInfos))
 
 		// 6. Request B
 
@@ -177,7 +177,7 @@ func TestConnectServer_Request(t *testing.T) {
 		require.Equal(t, requestNext.Connection.String(), conn.String())
 
 		require.Equal(t, 1, len(cs.clientsCloseFuncs))
-		require.Equal(t, 1, connInfoMapLen(cs.connInfos))
+		require.Equal(t, 1, connInfoMapLen(&cs.connInfos))
 
 		// 8. Close B
 
@@ -189,8 +189,7 @@ func TestConnectServer_Request(t *testing.T) {
 		require.Nil(t, serverNext.capturedRequest)
 
 		require.Equal(t, 0, len(cs.clientsCloseFuncs))
-		require.Equal(t, 0, connInfoMapLen(cs.connInfos))
-
+		require.Equal(t, 0, connInfoMapLen(&cs.connInfos))
 	}()
 }
 
@@ -279,11 +278,10 @@ func TestConnectServer_RequestParallel(t *testing.T) {
 		require.Equal(t, int32(parallelCount), serverClient.count)
 		require.Equal(t, int32(parallelCount), serverA.count)
 		require.Equal(t, int32(parallelCount), serverNext.count)
-
 	}()
 
 	require.Equal(t, 0, len(cs.clientsCloseFuncs))
-	require.Equal(t, 0, connInfoMapLen(cs.connInfos))
+	require.Equal(t, 0, connInfoMapLen(&cs.connInfos))
 }
 
 func TestConnectServer_RequestFail(t *testing.T) {
@@ -342,8 +340,7 @@ func TestConnectServer_RequestFail(t *testing.T) {
 
 		cs := s.(*connectServer)
 		require.Equal(t, 0, len(cs.clientsCloseFuncs))
-		require.Equal(t, 0, connInfoMapLen(cs.connInfos))
-
+		require.Equal(t, 0, connInfoMapLen(&cs.connInfos))
 	}()
 }
 
@@ -400,7 +397,7 @@ func (s *countServer) Close(ctx context.Context, conn *networkservice.Connection
 	return next.Server(ctx).Close(ctx, conn)
 }
 
-func connInfoMapLen(connMap connectionInfoMap) int {
+func connInfoMapLen(connMap *connectionInfoMap) int {
 	size := 0
 	connMap.Range(func(key string, value connectionInfo) bool {
 		size++

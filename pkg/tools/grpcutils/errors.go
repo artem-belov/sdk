@@ -18,11 +18,12 @@ package grpcutils
 
 import (
 	"errors"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// UnwrapErrorCode searches grpc error status Code within error
+// UnwrapCode searches grpc error status Code within error
 func UnwrapCode(err error) codes.Code {
 	if err == nil {
 		return codes.OK

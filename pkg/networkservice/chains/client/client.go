@@ -1,5 +1,7 @@
 // Copyright (c) 2020 Cisco Systems, Inc.
 //
+// Copyright (c) 2021 Doc.ai and/or its affiliates.
+//
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -53,8 +55,7 @@ import (
 //             - cc - grpc.ClientConnInterface for the endpoint to which this client should connect
 //             - additionalFunctionality - any additional NetworkServiceClient chain elements to be included in the chain
 func NewClient(ctx context.Context, name string, registerClientFunc heal.RegisterClientFunc, tokenGenerator token.GeneratorFunc, cc grpc.ClientConnInterface, additionalFunctionality ...networkservice.NetworkServiceClient) networkservice.NetworkServiceClient {
-	var rv networkservice.NetworkServiceClient
-	rv = chain.NewNetworkServiceClient(
+	return chain.NewNetworkServiceClient(
 		append(
 			append([]networkservice.NetworkServiceClient{
 				authorize.NewClient(),
@@ -68,7 +69,6 @@ func NewClient(ctx context.Context, name string, registerClientFunc heal.Registe
 			updatetoken.NewClient(tokenGenerator),
 			networkservice.NewNetworkServiceClient(cc),
 		)...)
-	return rv
 }
 
 // NewCrossConnectClientFactory - returns a (2.) case func(cc grpc.ClientConnInterface) NSM client factory.

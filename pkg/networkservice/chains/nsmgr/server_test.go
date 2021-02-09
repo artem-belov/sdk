@@ -621,12 +621,7 @@ func (c *counterServer) Request(ctx context.Context, request *networkservice.Net
 	if c.requests == nil {
 		c.requests = make(map[string]int32)
 	}
-	connId := request.GetConnection().GetId()
-	if _, ok := c.requests[connId]; ok {
-		c.requests[connId]++
-	} else {
-		c.requests[connId] = 1
-	}
+	c.requests[request.GetConnection().GetId()]++
 
 	return next.Server(ctx).Request(ctx, request)
 }
@@ -639,12 +634,7 @@ func (c *counterServer) Close(ctx context.Context, connection *networkservice.Co
 	if c.closes == nil {
 		c.closes = make(map[string]int32)
 	}
-	connId := connection.GetId()
-	if _, ok := c.closes[connId]; ok {
-		c.closes[connId]++
-	} else {
-		c.closes[connId] = 1
-	}
+	c.closes[connection.GetId()]++
 
 	return next.Server(ctx).Close(ctx, connection)
 }

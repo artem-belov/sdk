@@ -112,7 +112,7 @@ func TestNSMGR_HealLocalForwarder(t *testing.T) {
 		},
 	}
 
-	testNSMGR_HealForwarder(t, 1, customConfig, forwarderCtxCancel)
+	testNSMGRHealForwarder(t, 1, customConfig, forwarderCtxCancel)
 }
 
 func TestNSMGR_HealRemoteForwarder(t *testing.T) {
@@ -126,10 +126,10 @@ func TestNSMGR_HealRemoteForwarder(t *testing.T) {
 		},
 	}
 
-	testNSMGR_HealForwarder(t, 0, customConfig, forwarderCtxCancel)
+	testNSMGRHealForwarder(t, 0, customConfig, forwarderCtxCancel)
 }
 
-func testNSMGR_HealForwarder(t *testing.T, nodeNum int, customConfig []*sandbox.NodeConfig, forwarderCtxCancel context.CancelFunc) {
+func testNSMGRHealForwarder(t *testing.T, nodeNum int, customConfig []*sandbox.NodeConfig, forwarderCtxCancel context.CancelFunc) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
@@ -171,8 +171,7 @@ func testNSMGR_HealForwarder(t *testing.T, nodeNum int, customConfig []*sandbox.
 	require.Equal(t, 1, counter.UniqueRequests())
 	require.Equal(t, 8, len(conn.Path.PathSegments))
 
-	forwarderName := "cross-nse-restored"
-	builder.NewCrossConnectNSE(ctx, forwarderName, domain.Nodes[nodeNum].NSMgr, sandbox.GenerateTestToken)
+	builder.NewCrossConnectNSE(ctx, "cross-nse-restored", domain.Nodes[nodeNum].NSMgr, sandbox.GenerateTestToken)
 
 	forwarderCtxCancel()
 
@@ -200,10 +199,10 @@ func TestNSMGR_HealRemoteNSMgrRestored(t *testing.T) {
 		},
 	}
 
-	testNSMGR_HealNSMgr(t, 0, customConfig, nsmgrCtxCancel)
+	testNSMGRHealNSMgr(t, 0, customConfig, nsmgrCtxCancel)
 }
 
-func testNSMGR_HealNSMgr(t *testing.T, nodeNum int, customConfig []*sandbox.NodeConfig, nsmgrCtxCancel context.CancelFunc) {
+func testNSMGRHealNSMgr(t *testing.T, nodeNum int, customConfig []*sandbox.NodeConfig, nsmgrCtxCancel context.CancelFunc) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()

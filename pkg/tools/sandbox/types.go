@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Doc.ai and/or its affiliates.
+// Copyright (c) 2020-2021 Doc.ai and/or its affiliates.
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -81,7 +81,7 @@ type Domain struct {
 	resources     []context.CancelFunc
 }
 
-// Cleanup frees all resources related to the domain
+// AddResources appends resources to the Domain to close it later
 func (d *Domain) AddResources(resources []context.CancelFunc) {
 	d.resources = append(d.resources, resources...)
 }

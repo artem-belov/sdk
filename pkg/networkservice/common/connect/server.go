@@ -21,13 +21,13 @@ package connect
 
 import (
 	"context"
+	"net/url"
 	"sync"
 
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"net/url"
 
 	"github.com/networkservicemesh/api/pkg/api/networkservice"
 
@@ -177,7 +177,6 @@ func (s *connectServer) newClient(clientURL *url.URL) (networkservice.NetworkSer
 			cancel()
 			delete(s.clientsCloseFuncs, *clientPtr)
 			return true
-
 		}
 
 		if deleted := s.clients.Delete(clientURL.String()); deleted {

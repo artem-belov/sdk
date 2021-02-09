@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Doc.ai and/or its affiliates.
+// Copyright (c) 2020-2021 Doc.ai and/or its affiliates.
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -43,7 +43,7 @@ func NewServer(ctx context.Context, name string, tokenGenerator token.GeneratorF
 
 	rv := nsmgrProxyServer{}
 
-	healServer := heal.NewServer(ctx, addressof.NetworkServiceClient(adapters.NewServerToClient(rv)))
+	healServer, registerClient := heal.NewServer(ctx, addressof.NetworkServiceClient(adapters.NewServerToClient(rv)))
 	rv.Endpoint = endpoint.NewServer(ctx,
 		name,
 		authorize.NewServer(),
@@ -55,7 +55,7 @@ func NewServer(ctx context.Context, name string, tokenGenerator token.GeneratorF
 		connect.NewServer(
 			ctx,
 			client.NewClientFactory(name,
-				healServer.RegisterClient,
+				registerClient,
 				tokenGenerator),
 			options...,
 		),

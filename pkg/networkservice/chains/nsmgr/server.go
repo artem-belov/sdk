@@ -104,7 +104,7 @@ func NewServer(ctx context.Context, nsmRegistration *registryapi.NetworkServiceE
 	nsClient := adapter_registry.NetworkServiceServerToClient(nsRegistry)
 	var interposeRegistry registryapi.NetworkServiceEndpointRegistryServer
 
-	healServer := heal.NewServer(ctx, addressof.NetworkServiceClient(adapters.NewServerToClient(rv)))
+	healServer, registerClient := heal.NewServer(ctx, addressof.NetworkServiceClient(adapters.NewServerToClient(rv)))
 
 	// Construct Endpoint
 	rv.Endpoint = endpoint.NewServer(ctx,
@@ -122,7 +122,7 @@ func NewServer(ctx context.Context, nsmRegistration *registryapi.NetworkServiceE
 		connect.NewServer(ctx,
 			client.NewClientFactory(
 				nsmRegistration.Name,
-				healServer.RegisterClient,
+				registerClient,
 				tokenGenerator,
 				recvfd.NewClient(),
 				sendfd.NewClient(), // Send passed files.
